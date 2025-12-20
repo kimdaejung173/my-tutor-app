@@ -1,32 +1,17 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
-import re
+import json
 import os
-import time
+import re
 from datetime import datetime
-from st_click_detector import click_detector
 
 # --- 페이지 설정 ---
 st.set_page_config(page_title="영어 숙제", layout="wide")
 
-# --- 스타일 설정 ---
-st.markdown("""
-<style>
-    .st-click-detector a { color: black !important; text-decoration: none !important; border-bottom: 1px solid transparent; transition: background-color 0.1s; }
-    .st-click-detector a:hover { background-color: #E3F2FD; border-radius: 3px; color: #1565C0 !important; }
-    button.sent-num { background-color: #E8F5E9 !important; color: #2E7D32 !important; border: 1px solid #4CAF50 !important; border-radius: 50%; font-size: 14px; padding: 0 6px; }
-    .trans-box { background-color: #FAFAFA; border-left: 4px solid #4CAF50; padding: 10px; margin: 5px 0 15px 0; color: #333; }
-    .expl-box { background-color: #E1F5FE; padding: 15px; border-radius: 8px; margin-top: 15px; color: #01579B; }
-</style>
-""", unsafe_allow_html=True)
-
 # --- 상태 초기화 ---
 if 'user_name' not in st.session_state: st.session_state.user_name = ""
 if 'step' not in st.session_state: st.session_state.step = "login"
-if 'unknown_words' not in st.session_state: st.session_state.unknown_words = set()
-if 'viewed_trans' not in st.session_state: st.session_state.viewed_trans = set()
-if 'viewed_opt_trans' not in st.session_state: st.session_state.viewed_opt_trans = set()
-if 'render_id' not in st.session_state: st.session_state.render_id = 0
 if 'homework_log' not in st.session_state: st.session_state.homework_log = []
 
 # --- 데이터 로드 ---
@@ -42,178 +27,285 @@ def load_data():
 df = load_data()
 
 # --- 로그 기록 함수 ---
-def add_log(is_correct, user_ans):
-    clean_words = []
-    for w in st.session_state.unknown_words:
-        parts = w.split('_')
-        if len(parts) >= 3: clean_words.append("_".join(parts[2:]))
-        else: clean_words.append(w)
-    
+def add_log(q_id, is_correct, user_ans, unknown_words):
     log_data = {
         "시간": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "이름": st.session_state.user_name,
-        "문제번호": str(st.session_state.current_q['id']),
+        "문제번호": str(q_id),
         "결과": "정답" if is_correct else "오답",
         "학생답안": user_ans,
-        "모르는단어": ", ".join(sorted(list(set(clean_words))))
+        "모르는단어": unknown_words
     }
     st.session_state.homework_log.append(log_data)
 
-# --- HTML 생성기 ---
-def create_html(text, prefix):
-    words = text.split()
-    html_parts = []
-    for idx, word in enumerate(words):
-        clean_word = word.strip(".,!?\"'()[]")
-        unique_id = f"{prefix}_{idx}_{clean_word}"
-        if unique_id in st.session_state.unknown_words:
-            style = "background-color: #FFF176; color: black; font-weight: bold; border-radius: 3px; padding: 0 2px;"
-        else:
-            style = "color: black; text-decoration: none;"
-        html_parts.append(f"<a href='javascript:void(0);' id='{unique_id}' style='{style}'>{word}</a>")
-    return " ".join(html_parts)
-
-# --- [핵심 수정] 부분 리모델링 함수 적용 (버퍼링 제거용) ---
-@st.fragment
-def render_options_fragment(q):
-    st.subheader("1️⃣ 보기 (클릭 = 형광펜)")
-    try:
-        opts = str(q['options']).split("^")
-        opt_trans = str(q.get('option_trans', '')).split("^")
-    except: opts, opt_trans = [], []
-
-    for i, opt in enumerate(opts):
-        c1, c2 = st.columns([0.5, 9.5])
-        with c1:
-            if st.button(f"({i+1})", key=f"btn_opt_{i}"):
-                if i in st.session_state.viewed_opt_trans: st.session_state.viewed_opt_trans.remove(i)
-                else: st.session_state.viewed_opt_trans.add(i)
-        with c2:
-            html = create_html(opt, f"opt_{i}")
-            # key에 render_id를 포함시켜서 클릭 시 새로운 감지기로 인식하게 함
-            clicked = click_detector(html, key=f"cd_opt_{i}_{st.session_state.render_id}")
-            if clicked:
-                if clicked in st.session_state.unknown_words: st.session_state.unknown_words.remove(clicked)
-                else: st.session_state.unknown_words.add(clicked)
-                st.session_state.render_id += 1
-                st.rerun() # 전체 새로고침이 아니라, 이 함수(fragment) 내부만 새로고침됨!
-            if i in st.session_state.viewed_opt_trans:
-                ot = opt_trans[i] if i < len(opt_trans) else ""
-                st.markdown(f"<div class='trans-box'>└ {ot}</div>", unsafe_allow_html=True)
-            else: st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
-
-@st.fragment
-def render_passage_fragment(q):
-    st.subheader("2️⃣ 지문 독해")
-    sentences = re.split(r'(?<=[.?!])\s+', str(q['passage']))
-    translations = re.split(r'(?<=[.?!])\s+', str(q['translation']))
+# --- [핵심] 자바스크립트 기반 UI 생성기 ---
+# 파이썬은 HTML만 던져주고, 색칠 놀이는 브라우저(JS)가 알아서 하게 둠
+def render_interactive_problem(q):
+    # 1. 데이터 준비 (따옴표 에러 방지용 처리)
+    passage = str(q['passage']).replace('"', '&quot;').replace("'", "&#39;")
+    translation = str(q['translation']).replace('"', '&quot;').replace("'", "&#39;")
+    options_raw = str(q['options']).split('^')
+    options_trans_raw = str(q.get('option_trans', '')).split('^')
     
-    for i, sent in enumerate(sentences):
-        c1, c2 = st.columns([0.5, 9.5])
-        with c1:
-            if st.button(f"({i+1})", key=f"btn_sent_{i}"):
-                if i in st.session_state.viewed_trans: st.session_state.viewed_trans.remove(i)
-                else: st.session_state.viewed_trans.add(i)
-        with c2:
-            html_s = create_html(sent, f"sent_{i}")
-            clicked_s = click_detector(html_s, key=f"cd_sent_{i}_{st.session_state.render_id}")
-            if clicked_s:
-                if clicked_s in st.session_state.unknown_words: st.session_state.unknown_words.remove(clicked_s)
-                else: st.session_state.unknown_words.add(clicked_s)
-                st.session_state.render_id += 1
-                st.rerun() # 여기도 이 부분만 빠릿하게 새로고침!
-            if i in st.session_state.viewed_trans:
-                t = translations[i] if i < len(translations) else ""
-                st.markdown(f"<div class='trans-box'>🇰🇷 {t}</div>", unsafe_allow_html=True)
-            else: st.markdown("<div style='margin-bottom:15px'></div>", unsafe_allow_html=True)
+    # 보기 데이터 JSON 변환
+    opts_data = []
+    for i, opt in enumerate(options_raw):
+        trans = options_trans_raw[i] if i < len(options_trans_raw) else ""
+        opts_data.append({"text": opt.strip(), "trans": trans.strip()})
+    
+    opts_json = json.dumps(opts_data).replace('"', '&quot;')
 
-# ===================== 메인 화면 =====================
+    # 2. HTML/JS/CSS 코드 덩어리
+    html_code = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: "Helvetica Neue", Arial, sans-serif; padding: 10px; }}
+            .word {{ cursor: pointer; padding: 0 2px; border-radius: 3px; transition: background 0.1s; }}
+            .word:hover {{ background-color: #E3F2FD; color: #1565C0; }}
+            .highlight {{ background-color: #FFF176 !important; color: black !important; font-weight: bold; }}
+            
+            .section-title {{ font-size: 1.1em; font-weight: bold; margin-top: 20px; margin-bottom: 10px; color: #333; }}
+            
+            /* 보기 스타일 */
+            .opt-row {{ display: flex; margin-bottom: 8px; align-items: baseline; }}
+            .opt-num {{ 
+                background: #E8F5E9; color: #2E7D32; border: 1px solid #4CAF50; 
+                border-radius: 50%; width: 24px; height: 24px; text-align: center; 
+                line-height: 22px; font-size: 13px; font-weight: bold; cursor: pointer; margin-right: 10px; flex-shrink: 0;
+            }}
+            .opt-text {{ line-height: 1.6; }}
+            
+            /* 지문 스타일 */
+            .sent-row {{ margin-bottom: 15px; }}
+            .sent-num {{ 
+                display: inline-block; background: #E8F5E9; color: #2E7D32; border: 1px solid #4CAF50; 
+                border-radius: 50%; font-size: 12px; padding: 1px 6px; margin-right: 5px; cursor: pointer; vertical-align: middle;
+            }}
+            
+            /* 해석 박스 */
+            .trans-box {{ 
+                display: none; background: #FAFAFA; border-left: 4px solid #4CAF50; 
+                padding: 8px; margin-top: 5px; color: #333; font-size: 0.9em; 
+            }}
+            .show {{ display: block; }}
+            
+            /* 정답 선택 라디오 */
+            .radio-group {{ margin-top: 20px; background: #f9f9f9; padding: 15px; border-radius: 8px; }}
+            .radio-label {{ display: block; margin: 10px 0; cursor: pointer; }}
+            
+            /* 제출 버튼 */
+            #submit-btn {{
+                background-color: #FF4B4B; color: white; border: none; padding: 10px 20px;
+                border-radius: 5px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 20px;
+            }}
+            #submit-btn:hover {{ background-color: #FF3333; }}
+        </style>
+    </head>
+    <body>
+    
+        <div class="section-title">1️⃣ 보기 (클릭 = 형광펜)</div>
+        <div id="options-area"></div>
 
-# 1. 로그인 화면
+        <div class="section-title">2️⃣ 지문 독해 (번호 = 해석)</div>
+        <div id="passage-area"></div>
+
+        <div class="section-title">3️⃣ 정답 선택</div>
+        <div class="radio-group">
+            <label class="radio-label"><input type="radio" name="ans" value="1"> 1번</label>
+            <label class="radio-label"><input type="radio" name="ans" value="2"> 2번</label>
+            <label class="radio-label"><input type="radio" name="ans" value="3"> 3번</label>
+            <label class="radio-label"><input type="radio" name="ans" value="4"> 4번</label>
+            <label class="radio-label"><input type="radio" name="ans" value="5"> 5번</label>
+        </div>
+
+        <button id="submit-btn" onclick="submitData()">제출하기</button>
+
+        <script>
+            // 데이터 파싱
+            const passageRaw = "{passage}";
+            const transRaw = "{translation}";
+            const optsData = JSON.parse("{opts_json}");
+
+            // --- 렌더링 함수들 ---
+            
+            function createWordSpan(word) {{
+                const span = document.createElement('span');
+                span.innerText = word + " ";
+                span.className = 'word';
+                // 단어 클릭 시 형광펜 토글 (자바스크립트로 즉시 처리 -> 딜레이 0초)
+                span.onclick = function() {{ this.classList.toggle('highlight'); }};
+                return span;
+            }}
+
+            // 1. 보기 렌더링
+            const optContainer = document.getElementById('options-area');
+            optsData.forEach((opt, idx) => {{
+                const row = document.createElement('div');
+                row.className = 'opt-row';
+                
+                // 번호 버튼
+                const numBtn = document.createElement('div');
+                numBtn.className = 'opt-num';
+                numBtn.innerText = "(" + (idx + 1) + ")";
+                numBtn.onclick = function() {{ document.getElementById('opt-trans-' + idx).classList.toggle('show'); }};
+                
+                // 텍스트 & 해석
+                const textDiv = document.createElement('div');
+                textDiv.className = 'opt-text';
+                
+                // 단어 쪼개기
+                opt.text.split(' ').forEach(w => textDiv.appendChild(createWordSpan(w)));
+                
+                // 해석 박스
+                const transDiv = document.createElement('div');
+                transDiv.id = 'opt-trans-' + idx;
+                transDiv.className = 'trans-box';
+                transDiv.innerText = "└ " + opt.trans;
+                
+                textDiv.appendChild(transDiv);
+                row.appendChild(numBtn);
+                row.appendChild(textDiv);
+                optContainer.appendChild(row);
+            }});
+
+            // 2. 지문 렌더링
+            const psgContainer = document.getElementById('passage-area');
+            // 문장 단위 분리 (정규식)
+            const sentences = passageRaw.split(/(?<=[.?!])\s+/);
+            const translations = transRaw.split(/(?<=[.?!])\s+/);
+            
+            sentences.forEach((sent, idx) => {{
+                const row = document.createElement('div');
+                row.className = 'sent-row';
+                
+                // 문장 번호
+                const sNum = document.createElement('span');
+                sNum.className = 'sent-num';
+                sNum.innerText = "(" + (idx + 1) + ")";
+                sNum.onclick = function() {{ document.getElementById('sent-trans-' + idx).classList.toggle('show'); }};
+                row.appendChild(sNum);
+                
+                // 단어들
+                sent.split(' ').forEach(w => row.appendChild(createWordSpan(w)));
+                
+                // 해석 박스
+                const tBox = document.createElement('div');
+                tBox.id = 'sent-trans-' + idx;
+                tBox.className = 'trans-box';
+                tBox.innerText = "🇰🇷 " + (translations[idx] || "");
+                row.appendChild(tBox);
+                
+                psgContainer.appendChild(row);
+            }});
+
+            // --- 제출 함수 ---
+            function submitData() {{
+                // 1. 정답 가져오기
+                const radios = document.getElementsByName('ans');
+                let userAns = "";
+                for (let r of radios) {{ if (r.checked) userAns = r.value; }}
+                
+                if (!userAns) {{ alert("정답을 선택해주세요!"); return; }}
+                
+                // 2. 형광펜 칠한 단어 수집
+                const highlights = document.querySelectorAll('.highlight');
+                const words = [];
+                highlights.forEach(el => words.push(el.innerText.trim()));
+                const uniqueWords = [...new Set(words)].join(', ');
+
+                // 3. 데이터 포장해서 파이썬(Streamlit)으로 전송 (URL 파라미터 방식)
+                // 현재 페이지를 다시 로드하면서 쿼리 파라미터를 붙임
+                const params = new URLSearchParams();
+                params.set('submitted', 'true');
+                params.set('ans', userAns);
+                params.set('words', uniqueWords);
+                
+                // 상위 프레임(Streamlit 앱) 새로고침
+                window.top.location.search = params.toString();
+            }}
+        </script>
+    </body>
+    </html>
+    """
+    # 3. Streamlit에 iframe으로 쏴주기
+    components.html(html_code, height=900, scrolling=True)
+
+# ===================== 메인 화면 로직 =====================
+
+# 1. 로그인
 if not st.session_state.user_name:
     st.title("📝 영어 숙제장")
-    st.write("이름을 입력하고 숙제를 시작하세요.")
-    name = st.text_input("이름")
-    if st.button("숙제 시작하기", type="primary"):
+    name = st.text_input("이름을 입력하세요")
+    if st.button("시작하기", type="primary"):
         if name:
             st.session_state.user_name = name
             st.session_state.step = "new_question"
             st.rerun()
-
 else:
-    # 사이드바
-    with st.sidebar:
-        st.write(f"👤 **{st.session_state.user_name}** 학생")
-        st.write(f"푼 문제: {len(st.session_state.homework_log)}개")
-        if st.session_state.homework_log:
-            st.divider()
-            log_df = pd.DataFrame(st.session_state.homework_log)
-            csv_data = log_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label="📥 결과 파일 다운로드",
-                data=csv_data,
-                file_name=f"{st.session_state.user_name}_숙제결과.csv",
-                mime="text/csv",
-                type="primary"
-            )
-            st.info("👆 숙제를 마치고 버튼을 눌러 파일을 저장한 뒤 선생님께 보내주세요.")
-
-    # 2. 문제 뽑기
-    if st.session_state.step == "new_question":
-        if df.empty:
-            st.error("데이터 파일이 없습니다.")
-            st.stop()
-        st.session_state.current_q = df.sample(1).iloc[0]
-        st.session_state.unknown_words = set()
-        st.session_state.viewed_trans = set()
-        st.session_state.viewed_opt_trans = set()
-        st.session_state.render_id = 0
-        st.session_state.step = "solving"
-        st.rerun()
-
-    q = st.session_state.current_q
+    # 2. 결과 처리 (URL에 제출 데이터가 있는지 확인)
+    # Streamlit 1.30+ 기준: st.query_params 사용
+    params = st.query_params 
     
-    st.markdown(f"#### 문제 {q['id']}")
-    st.divider()
-
-    # [1] 보기 영역 (Fragment 적용됨)
-    render_options_fragment(q)
-
-    st.divider()
-
-    # [2] 지문 영역 (Fragment 적용됨)
-    render_passage_fragment(q)
-
-    st.divider()
-
-    # [3] 제출 영역 (여기는 전체 새로고침 필요)
-    st.subheader("3️⃣ 정답 선택")
-    with st.form("ans_form"):
-        try:
-            opts = str(q['options']).split("^")
-        except: opts = []
-        user_choice = st.radio("정답", opts)
-        submitted = st.form_submit_button("제출하기", type="primary")
+    if "submitted" in params:
+        # 제출된 상태면 결과 화면 표시
+        if df.empty: df = load_data() # 새로고침으로 데이터 날아갔을 경우 대비
         
-        if submitted and user_choice:
-            correct = str(q['answer']).strip()
-            user_num = user_choice.strip()[0]
-            is_correct = (user_num == correct)
-            
-            add_log(is_correct, user_num)
-            
-            if is_correct:
-                st.success("🎉 정답입니다!")
-                st.balloons()
-            else:
-                st.error(f"💥 틀렸습니다. 정답은 {correct}번 입니다.")
-            
-            expl = q.get('explanation', '')
-            st.markdown(f"<div class='expl-box'><b>💡 [해설]</b><br>{expl}</div>", unsafe_allow_html=True)
-            
-            st.session_state.step = "next"
+        # 문제 ID 복구 (가장 최근 문제거나, URL에 저장해야 하지만 간단히 마지막 문제로 가정)
+        # *주의* 새로고침하면 current_q가 날아갈 수 있으므로, 실제로는 문제 ID도 URL에 넘기는 게 안전함
+        # 여기선 간단히 처리
+        if 'current_q' not in st.session_state:
+             # 비상시: 데이터 다시 로드
+             if not df.empty: st.session_state.current_q = df.iloc[0]
 
-    if st.session_state.step == "next":
-        if st.button("➡️ 다음 문제 (자동 저장됨)"):
+        q = st.session_state.current_q
+        user_ans = params.get("ans", "X")
+        unknown_words = params.get("words", "")
+        
+        correct = str(q['answer']).strip()
+        is_correct = (user_ans == correct)
+        
+        # 로그 저장
+        add_log(q['id'], is_correct, user_ans, unknown_words)
+        
+        st.title("결과 확인")
+        if is_correct:
+            st.success("🎉 정답입니다!")
+            st.balloons()
+        else:
+            st.error(f"💥 틀렸습니다. (정답: {correct}번, 내 답: {user_ans}번)")
+            
+        st.info(f"💡 [해설] {q.get('explanation', '해설 없음')}")
+        st.write(f"📝 **내가 체크한 단어:** {unknown_words}")
+        
+        # 다음 문제 버튼 (누르면 URL 파라미터 싹 지우고 새 문제)
+        if st.button("➡️ 다음 문제 풀기", type="primary"):
+            st.query_params.clear() # URL 깨끗하게
             st.session_state.step = "new_question"
             st.rerun()
+            
+    else:
+        # 3. 문제 풀기 화면 (평소 상태)
+        
+        # 사이드바 (결과 다운로드)
+        with st.sidebar:
+            st.write(f"👤 **{st.session_state.user_name}**")
+            st.write(f"완료: {len(st.session_state.homework_log)}문제")
+            if st.session_state.homework_log:
+                log_df = pd.DataFrame(st.session_state.homework_log)
+                csv = log_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 결과 다운로드", csv, f"{st.session_state.user_name}_결과.csv", "text/csv")
+
+        # 새 문제 뽑기
+        if st.session_state.step == "new_question":
+            if df.empty: st.error("데이터 없음"); st.stop()
+            st.session_state.current_q = df.sample(1).iloc[0]
+            st.session_state.step = "solving"
+        
+        q = st.session_state.current_q
+        
+        st.markdown(f"#### 문제 {q['id']}")
+        
+        # [핵심] HTML/JS 컴포넌트 렌더링
+        render_interactive_problem(q)
