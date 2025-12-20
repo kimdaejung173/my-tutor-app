@@ -1,257 +1,279 @@
 import streamlit as st
 import pandas as pd
-import random
 import re
-import io
-import time
+import os
 from datetime import datetime
+from st_click_detector import click_detector
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="영어 독해 트레이닝", layout="wide")
+st.set_page_config(page_title="수능 영어 1등급", layout="wide")
 
-# --- CSS 스타일: 버튼을 '진짜 글자'처럼 만들기 (가독성 혁명) ---
+# --- [스타일] 파란 글씨 차단 & 가독성 최적화 ---
 st.markdown("""
 <style>
-    /* 버튼의 네모 테두리, 배경 제거하고 글자처럼 만들기 */
-    .stButton button {
-        background-color: transparent !important;
-        border: none !important;
-        padding: 0px 3px !important;
-        margin: 0px !important;
+    /* 1. 링크 스타일 원천 차단 */
+    .st-click-detector a {
         color: black !important;
-        font-size: 18px !important;
-        line-height: 1.8 !important;
-        display: inline-block !important;
-        text-align: left !important;
-        font-family: "Noto Sans KR", sans-serif !important;
-    }
-    .stButton button:hover {
-        color: #2962FF !important;
-        background-color: #E3F2FD !important;
-        border-radius: 4px !important;
-    }
-    .stButton {
-        display: inline-block !important;
-        margin-right: -4px !important; /* 버튼 사이 간격 좁히기 */
+        text-decoration: none !important;
+        border-bottom: 1px solid transparent;
+        transition: background-color 0.1s;
     }
     
-    /* 선택된 단어 (노란 형광펜) */
-    .word-selected button {
-        background-color: #FFF176 !important;
-        font-weight: bold !important;
-        border-radius: 4px !important;
-        color: black !important;
+    /* 2. 마우스 올렸을 때 */
+    .st-click-detector a:hover {
+        background-color: #E3F2FD;
+        border-radius: 3px;
+        color: #1565C0 !important;
+    }
+
+    /* 3. 문장 번호 버튼 */
+    button.sent-num {
+        background-color: #E8F5E9 !important;
+        color: #2E7D32 !important;
+        border: 1px solid #4CAF50 !important;
+        border-radius: 50% !important;
+        font-size: 14px !important;
+        padding: 0px 6px !important;
+    }
+
+    /* 4. 해석 박스 */
+    .trans-box {
+        background-color: #FAFAFA;
+        border-left: 4px solid #4CAF50;
+        padding: 10px;
+        margin: 5px 0 15px 0;
+        color: #333;
     }
     
-    /* 보기 박스 스타일 */
-    .option-box {
+    /* 5. 해설 박스 */
+    .expl-box {
+        background-color: #E1F5FE;
         padding: 15px;
-        background-color: #F8F9FA;
-        border-radius: 10px;
-        margin-bottom: 10px;
-        border: 1px solid #E0E0E0;
+        border-radius: 8px;
+        margin-top: 15px;
+        color: #01579B;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # --- 상태 초기화 ---
-if 'step' not in st.session_state: st.session_state.step = "login"
 if 'user_name' not in st.session_state: st.session_state.user_name = ""
-if 'current_q' not in st.session_state: st.session_state.current_q = None
+if 'step' not in st.session_state: st.session_state.step = "login"
 if 'unknown_words' not in st.session_state: st.session_state.unknown_words = set()
-if 'hint_used' not in st.session_state: st.session_state.hint_used = False
-if 'hint_locked' not in st.session_state: st.session_state.hint_locked = False # 해석 보기 영구 박제
+if 'viewed_trans' not in st.session_state: st.session_state.viewed_trans = set()
+if 'viewed_opt_trans' not in st.session_state: st.session_state.viewed_opt_trans = set()
 
-# --- 데이터 로드 함수 (오류 방지) ---
+# [핵심] 무한 루프 방지용 번호표 (클릭할 때마다 숫자가 바뀜 -> 새 감지기로 인식)
+if 'render_id' not in st.session_state: st.session_state.render_id = 0
+
+# --- 데이터 로드 ---
 @st.cache_data
 def load_data():
     try:
-        # 구분자를 '|'로 지정
         df = pd.read_csv("data.csv", sep="|")
-        # 보기(options) 분리할 때 기존 | 와 충돌 방지를 위해 ^ 기호 사용 권장
+        df['id'] = df['id'].astype(str)
         return df
     except:
         return pd.DataFrame()
 
-# --- 구글 시트 저장 함수 (핵심) ---
-def save_to_google_sheet(data_row):
-    """
-    구글 시트에 데이터를 저장합니다.
-    설정이 안 되어 있으면 로컬 CSV에 저장합니다.
-    """
-    try:
-        # streamlit_google_sheets 라이브러리가 필요함 (requirements.txt에 추가)
-        conn = st.connection("gsheets", type="gsheets")
-        # 기존 데이터 읽기
-        existing_data = conn.read(worksheet="Logs", usecols=list(range(6)), ttl=5)
-        
-        # 새 데이터 추가
-        updated_data = pd.concat([existing_data, pd.DataFrame([data_row])], ignore_index=True)
-        
-        # 업데이트 (이 부분이 실제로 시트에 씀)
-        conn.update(worksheet="Logs", data=updated_data)
-        st.toast("☁️ 구글 시트에 저장 성공!", icon="✅")
-        
-    except Exception as e:
-        # 구글 시트 연결 실패 시 로컬 파일에 저장 (백업)
-        st.toast(f"⚠️ 구글 시트 연동 안됨. 로컬에 저장합니다.", icon="💾")
-        local_log = "student_logs.csv"
-        try:
-            old_df = pd.read_csv(local_log)
-            new_df = pd.concat([old_df, pd.DataFrame([data_row])])
-        except:
-            new_df = pd.DataFrame([data_row])
-        new_df.to_csv(local_log, index=False, encoding='utf-8-sig')
-
-# --- 단어 클릭 토글 함수 ---
-def toggle_word(word):
-    clean = word.strip(".,!?;:\"'")
-    if clean in st.session_state.unknown_words:
-        st.session_state.unknown_words.remove(clean)
-    else:
-        st.session_state.unknown_words.add(clean)
-
-# ================= 메인 로직 =================
-
 df = load_data()
 
-# 1. 로그인 화면
-if st.session_state.step == "login":
-    st.title("🔐 Student Login")
-    name = st.text_input("이름을 입력하세요")
+# --- 로그 저장 함수 ---
+def save_log(is_correct, user_ans):
+    clean_words = []
+    for w in st.session_state.unknown_words:
+        parts = w.split('_')
+        if len(parts) >= 3: clean_words.append("_".join(parts[2:]))
+        else: clean_words.append(w)
     
-    if st.button("학습 시작하기", type="primary"):
-        if name and not df.empty:
-            st.session_state.user_name = name
-            
-            # --- 랜덤 문제 뽑기 로직 ---
-            # 나중에는 구글 시트에서 '이 학생이 푼 문제 ID'를 가져와서 빼야 함
-            # 지금은 단순히 랜덤으로 하나 뽑음
-            random_idx = random.randint(0, len(df) - 1)
-            st.session_state.current_q = df.iloc[random_idx]
-            
-            # 상태 초기화
-            st.session_state.unknown_words = set()
-            st.session_state.hint_used = False
-            st.session_state.hint_locked = False
-            
-            st.session_state.step = "step1_options"
-            st.rerun()
-        elif df.empty:
-            st.error("데이터 파일(data.csv)이 없습니다! 선생님에게 문의하세요.")
+    words_str = ", ".join(sorted(list(set(clean_words))))
+    sent_viewed = ", ".join(sorted([str(i+1) for i in st.session_state.viewed_trans]))
+    opt_viewed = ", ".join(sorted([str(i+1) for i in st.session_state.viewed_opt_trans]))
 
-# 2. Step 1: 보기 먼저 보기
-elif st.session_state.step == "step1_options":
-    q = st.session_state.current_q
-    st.subheader(f"Step 1. 보기를 먼저 읽고 내용을 예측해보세요 ({st.session_state.user_name})")
+    log_data = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "name": st.session_state.user_name,
+        "problem_id": str(st.session_state.current_q['id']),
+        "is_correct": "O" if is_correct else "X",
+        "user_answer": user_ans,
+        "viewed_sentences": sent_viewed if sent_viewed else "None",
+        "viewed_options": opt_viewed if opt_viewed else "None",
+        "unknown_words": words_str
+    }
     
-    # 보기 출력 (구분자를 ^로 가정)
+    # 로컬 저장
+    local_file = "student_logs.csv"
     try:
-        options = q['options'].split("^") 
-    except:
-        options = ["데이터 형식 오류: 보기를 ^ 기호로 구분해주세요"]
+        if os.path.exists(local_file):
+            pd.DataFrame([log_data]).to_csv(local_file, mode='a', header=False, index=False, encoding='utf-8-sig')
+        else:
+            pd.DataFrame([log_data]).to_csv(local_file, index=False, encoding='utf-8-sig')
+    except: pass
 
-    for opt in options:
-        st.markdown(f"<div class='option-box'>{opt}</div>", unsafe_allow_html=True)
+    # 구글 시트 저장
+    try:
+        conn = st.connection("gsheets", type="gsheets")
+        try:
+            old = conn.read(worksheet="Logs", ttl=0)
+            new = pd.concat([old, pd.DataFrame([log_data])], ignore_index=True)
+        except:
+            new = pd.DataFrame([log_data])
+        conn.update(worksheet="Logs", data=new)
+        st.toast("✅ 저장 완료!", icon="Cloud")
+    except:
+        st.toast(f"💾 로컬 저장 완료", icon="✅")
+
+# --- HTML 생성기 ---
+def create_html(text, prefix):
+    words = text.split()
+    html_parts = []
     
-    st.write("")
-    if st.button("지문 읽으러 가기 (Next) ➡️", type="primary"):
-        st.session_state.step = "step2_passage"
+    for idx, word in enumerate(words):
+        clean_word = word.strip(".,!?\"'()[]")
+        unique_id = f"{prefix}_{idx}_{clean_word}"
+        
+        # 형광펜 스타일 (CSS 강제 주입)
+        if unique_id in st.session_state.unknown_words:
+            style = "background-color: #FFF176; color: black; font-weight: bold; border-radius: 3px; padding: 0 2px;"
+        else:
+            style = "color: black; text-decoration: none;"
+            
+        # javascript:void(0)로 점프 방지
+        html_parts.append(f"<a href='javascript:void(0);' id='{unique_id}' style='{style}'>{word}</a>")
+    
+    return " ".join(html_parts)
+
+# ===================== 메인 화면 =====================
+
+if not st.session_state.user_name:
+    st.title("🎓 수능 영어 독해")
+    name = st.text_input("이름")
+    if st.button("시작하기", type="primary"):
+        if name:
+            st.session_state.user_name = name
+            st.session_state.step = "new_question"
+            st.rerun()
+
+else:
+    # 새 문제 뽑기
+    if st.session_state.step == "new_question":
+        if df.empty:
+            st.error("데이터 파일(data.csv)이 없습니다.")
+            st.stop()
+        st.session_state.current_q = df.sample(1).iloc[0]
+        st.session_state.unknown_words = set()
+        st.session_state.viewed_trans = set()
+        st.session_state.viewed_opt_trans = set()
+        st.session_state.render_id = 0 # 새 문제니까 ID 리셋
+        st.session_state.step = "solving"
         st.rerun()
 
-# 3. Step 2: 지문 읽기 (자연스러운 텍스트 버전)
-elif st.session_state.step == "step2_passage":
     q = st.session_state.current_q
-    st.subheader("Step 2. 지문을 읽고 모르는 단어를 클릭하세요")
     
-    # 지문을 단어 단위로 쪼개기
-    # 정규표현식으로 단어와 공백/특수문자를 분리해서 보존
-    tokens = re.findall(r"[\w']+|[.,!?;:\"]|\s", q['passage'])
+    st.markdown(f"#### 👤 {st.session_state.user_name} | 문제 {q['id']}")
+    st.divider()
+
+    # [1] 보기 영역
+    st.subheader("1️⃣ 보기 (클릭 = 형광펜)")
     
-    # --- [매우 중요] 단어를 '줄글'처럼 보이게 하는 레이아웃 ---
-    # Streamlit의 columns 대신 HTML/CSS flow를 흉내내기 위해
-    # 화면 가로폭에 맞춰 버튼을 나열하는 건 불가능하므로, 
-    # 'experimental_fragment'와 커스텀 CSS를 활용해 버튼을 inline으로 배치
-    
-    with st.container():
-        # 문단을 흉내내기 위해 버튼들을 쭉 나열
-        for idx, token in enumerate(tokens):
-            if token.strip() == "": 
-                continue # 공백은 무시 (버튼 사이 마진으로 대체되거나 별도 처리)
+    try:
+        opts = str(q['options']).split("^")
+        opt_trans = str(q.get('option_trans', '')).split("^")
+    except: opts, opt_trans = [], []
+
+    for i, opt in enumerate(opts):
+        c1, c2 = st.columns([0.5, 9.5])
+        
+        with c1:
+            if st.button(f"({i+1})", key=f"btn_opt_{i}"):
+                if i in st.session_state.viewed_opt_trans: st.session_state.viewed_opt_trans.remove(i)
+                else: st.session_state.viewed_opt_trans.add(i)
+        
+        with c2:
+            html = create_html(opt, f"opt_{i}")
+            # [핵심] key에 render_id를 붙여서 클릭할 때마다 '새 컴포넌트'로 인식시킴 -> 루프 차단
+            clicked = click_detector(html, key=f"cd_opt_{i}_{st.session_state.render_id}")
             
-            clean_word = token.strip(".,!?;:\"'")
-            is_sel = clean_word in st.session_state.unknown_words
-            
-            # CSS 클래스를 동적으로 적용하기 위해 빈 컨테이너 사용 불가 -> 버튼 자체 스타일링
-            # 버튼이 눌리면 바로 리런됨
-            btn_key = f"word_{idx}_{clean_word}"
-            
-            # 선택된 단어인지 확인하여 스타일 적용할 방법이 제한적임.
-            # 따라서 버튼 텍스트 자체에 표시를 하거나(비추), 
-            # 위 CSS에서 .stButton button 상태를 제어해야 함.
-            # 여기서는 Streamlit 제약상 'type="primary"'를 사용하여 색상 구분
-            
-            if st.button(token, key=btn_key, type="primary" if is_sel else "secondary"):
-                toggle_word(token)
+            if clicked:
+                if clicked in st.session_state.unknown_words:
+                    st.session_state.unknown_words.remove(clicked)
+                else:
+                    st.session_state.unknown_words.add(clicked)
+                
+                # 클릭했으니 판을 새로 깝니다 (ID 증가)
+                st.session_state.render_id += 1 
                 st.rerun()
 
+            if i in st.session_state.viewed_opt_trans:
+                ot = opt_trans[i] if i < len(opt_trans) else ""
+                st.markdown(f"<div class='trans-box'>└ {ot}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
+
     st.divider()
+
+    # [2] 지문 영역
+    st.subheader("2️⃣ 지문 독해 (번호 = 해석)")
     
-    # 해석 보기 (낙장불입)
-    col1, col2 = st.columns([1, 4])
-    if not st.session_state.hint_locked:
-        if col1.button("👁️ 전체 해석 보기 (한번만 가능)"):
-            st.session_state.hint_locked = True
-            st.session_state.hint_used = True
+    sentences = re.split(r'(?<=[.?!])\s+', str(q['passage']))
+    translations = re.split(r'(?<=[.?!])\s+', str(q['translation']))
+    
+    for i, sent in enumerate(sentences):
+        c1, c2 = st.columns([0.5, 9.5])
+        
+        with c1:
+            if st.button(f"({i+1})", key=f"btn_sent_{i}"):
+                if i in st.session_state.viewed_trans: st.session_state.viewed_trans.remove(i)
+                else: st.session_state.viewed_trans.add(i)
+        
+        with c2:
+            html_s = create_html(sent, f"sent_{i}")
+            # 여기도 render_id 적용!
+            clicked_s = click_detector(html_s, key=f"cd_sent_{i}_{st.session_state.render_id}")
+            
+            if clicked_s:
+                if clicked_s in st.session_state.unknown_words:
+                    st.session_state.unknown_words.remove(clicked_s)
+                else:
+                    st.session_state.unknown_words.add(clicked_s)
+                
+                # 클릭 처리 후 ID 증가 및 리런
+                st.session_state.render_id += 1
+                st.rerun()
+            
+            if i in st.session_state.viewed_trans:
+                t = translations[i] if i < len(translations) else ""
+                st.markdown(f"<div class='trans-box'>🇰🇷 {t}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='margin-bottom:15px'></div>", unsafe_allow_html=True)
+
+    st.divider()
+
+    # [3] 제출
+    st.subheader("3️⃣ 정답 선택")
+    with st.form("ans_form"):
+        user_choice = st.radio("정답", opts)
+        submitted = st.form_submit_button("제출하기", type="primary")
+        
+        if submitted and user_choice:
+            correct = str(q['answer']).strip()
+            user_num = user_choice.strip()[0]
+            is_correct = (user_num == correct)
+            
+            save_log(is_correct, user_num)
+            
+            if is_correct:
+                st.success("🎉 정답입니다!")
+                st.balloons()
+            else:
+                st.error(f"💥 틀렸습니다. 정답은 {correct}번 입니다.")
+            
+            expl = q.get('explanation', '')
+            st.markdown(f"<div class='expl-box'><b>💡 [해설]</b><br>{expl}</div>", unsafe_allow_html=True)
+            
+            st.session_state.step = "next"
+
+    if st.session_state.step == "next":
+        if st.button("➡️ 다음 문제"):
+            st.session_state.step = "new_question"
             st.rerun()
-    else:
-        col1.warning("해석을 확인했습니다. (기록됨)")
-        st.info(q['translation'])
-
-    st.divider()
-    
-    # 정답 제출
-    st.subheader("Q. 정답을 선택하세요")
-    # 보기 다시 가져오기
-    try:
-        options = q['options'].split("^")
-    except:
-        options = ["보기 데이터 오류"]
-        
-    choice = st.radio("선택지", options, label_visibility="collapsed")
-    
-    if st.button("제출하기 📤", type="primary"):
-        # 정답 체크 로직 (데이터에 정답란이 숫자 1,2,3... 이라고 가정)
-        # 보기에 "1. 어쩌구" 처럼 숫자가 있다고 가정하고 첫 글자 비교
-        user_ans_num = choice.strip()[0] 
-        correct_ans = str(q['answer']).strip()
-        
-        is_correct = (user_ans_num == correct_ans)
-        
-        # 데이터 저장
-        log_data = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "name": st.session_state.user_name,
-            "problem_id": q['id'],
-            "is_correct": "O" if is_correct else "X",
-            "hint_used": "Used" if st.session_state.hint_used else "No",
-            "unknown_words": ", ".join(st.session_state.unknown_words)
-        }
-        
-        save_to_google_sheet(log_data)
-        
-        st.session_state.last_result = is_correct
-        st.session_state.step = "result"
-        st.rerun()
-
-# 4. 결과 화면
-elif st.session_state.step == "result":
-    if st.session_state.last_result:
-        st.success("🎉 정답입니다!")
-        st.balloons()
-    else:
-        st.error("앗, 틀렸습니다. 다시 복습해보세요.")
-        
-    if st.button("다음 문제 풀기 ➡️"):
-        st.session_state.step = "login" # 다시 로그인 화면(혹은 대시보드)으로
-        st.rerun()
