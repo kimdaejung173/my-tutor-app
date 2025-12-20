@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import os
+import time
 from datetime import datetime
 from st_click_detector import click_detector
 
@@ -11,56 +12,10 @@ st.set_page_config(page_title="영어 숙제", layout="wide")
 # --- 스타일 설정 ---
 st.markdown("""
 <style>
-    /* 전체 링크 스타일 제거 (파란색, 밑줄 방지) */
-    .st-click-detector a {
-        color: black !important;
-        text-decoration: none !important;
-        border-bottom: 1px solid transparent;
-        transition: all 0.1s ease-in-out;
-    }
-    
-    /* 단어 마우스 올렸을 때 */
-    .st-click-detector a.word:hover {
-        background-color: #E3F2FD;
-        border-radius: 3px;
-        color: #1565C0 !important;
-    }
-    
-    /* 문장 번호 스타일 */
-    .st-click-detector a.num {
-        display: inline-block;
-        background-color: #E8F5E9;
-        color: #2E7D32 !important;
-        border: 1px solid #4CAF50;
-        border-radius: 50%;
-        font-size: 13px;
-        font-weight: bold;
-        padding: 0px 5px;
-        margin-right: 6px;
-        margin-bottom: 2px;
-        vertical-align: middle;
-    }
-    .st-click-detector a.num:hover {
-        background-color: #C8E6C9;
-        cursor: pointer;
-    }
-
-    /* 해석 박스 (HTML 내부에 삽입될 스타일) */
-    .trans-box {
-        display: block;
-        background-color: #FAFAFA;
-        border-left: 4px solid #4CAF50;
-        padding: 8px 12px;
-        margin: 8px 0 15px 5px;
-        color: #333;
-        font-size: 0.95rem;
-        border-radius: 0 4px 4px 0;
-    }
-    
-    /* 보기 영역 간격 */
-    .opt-container { margin-bottom: 12px; }
-    
-    /* 해설 박스 */
+    .st-click-detector a { color: black !important; text-decoration: none !important; border-bottom: 1px solid transparent; transition: background-color 0.1s; }
+    .st-click-detector a:hover { background-color: #E3F2FD; border-radius: 3px; color: #1565C0 !important; }
+    button.sent-num { background-color: #E8F5E9 !important; color: #2E7D32 !important; border: 1px solid #4CAF50 !important; border-radius: 50%; font-size: 14px; padding: 0 6px; }
+    .trans-box { background-color: #FAFAFA; border-left: 4px solid #4CAF50; padding: 10px; margin: 5px 0 15px 0; color: #333; }
     .expl-box { background-color: #E1F5FE; padding: 15px; border-radius: 8px; margin-top: 15px; color: #01579B; }
 </style>
 """, unsafe_allow_html=True)
@@ -71,7 +26,8 @@ if 'step' not in st.session_state: st.session_state.step = "login"
 if 'unknown_words' not in st.session_state: st.session_state.unknown_words = set()
 if 'viewed_trans' not in st.session_state: st.session_state.viewed_trans = set()
 if 'viewed_opt_trans' not in st.session_state: st.session_state.viewed_opt_trans = set()
-if 'homework_log' not in st.session_state: st.session_state.homework_log = [] 
+if 'render_id' not in st.session_state: st.session_state.render_id = 0
+if 'homework_log' not in st.session_state: st.session_state.homework_log = []
 
 # --- 데이터 로드 ---
 @st.cache_data
@@ -103,107 +59,77 @@ def add_log(is_correct, user_ans):
     }
     st.session_state.homework_log.append(log_data)
 
-# --- [핵심 1] 통합 HTML 생성기 (지문 전체를 한 덩어리로 만듦) ---
-def create_combined_html(text_list, trans_list, type="passage", viewed_set=None):
+# --- HTML 생성기 ---
+def create_html(text, prefix):
+    words = text.split()
     html_parts = []
-    
-    for i, text in enumerate(text_list):
-        # 1. 문장/보기 번호 (클릭 가능한 링크로 만듦)
-        # ID 형식: trans_0 (0번 문장 해석 토글)
-        num_id = f"trans_{i}"
-        html_parts.append(f"<div class='opt-container'>") # 줄바꿈 컨테이너
-        html_parts.append(f"<a href='javascript:void(0);' id='{num_id}' class='num'>({i+1})</a>")
-        
-        # 2. 단어들 (형광펜 기능)
-        words = text.split()
-        for idx, word in enumerate(words):
-            clean_word = word.strip(".,!?\"'()[]")
-            # ID 형식: word_0_12_apple (0번 문장, 12번째 단어, apple)
-            unique_id = f"word_{i}_{idx}_{clean_word}"
-            
-            # 형광펜 스타일 적용
-            if unique_id in st.session_state.unknown_words:
-                style = "background-color: #FFF176; color: black; font-weight: bold; border-radius: 3px; padding: 0 2px;"
-            else:
-                style = ""
-            
-            html_parts.append(f"<a href='javascript:void(0);' id='{unique_id}' class='word' style='{style}'>{word}</a>")
-        
-        # 3. 해석 박스 (켜져 있으면 HTML 사이에 끼워넣기)
-        if i in viewed_set:
-            t = trans_list[i] if i < len(trans_list) else ""
-            # 줄바꿈 후 박스 생성
-            html_parts.append(f"<div class='trans-box'>🇰🇷 {t}</div>")
-            
-        html_parts.append("</div>") # div 닫기 (줄바꿈 효과)
-        
+    for idx, word in enumerate(words):
+        clean_word = word.strip(".,!?\"'()[]")
+        unique_id = f"{prefix}_{idx}_{clean_word}"
+        if unique_id in st.session_state.unknown_words:
+            style = "background-color: #FFF176; color: black; font-weight: bold; border-radius: 3px; padding: 0 2px;"
+        else:
+            style = "color: black; text-decoration: none;"
+        html_parts.append(f"<a href='javascript:void(0);' id='{unique_id}' style='{style}'>{word}</a>")
     return " ".join(html_parts)
 
-# --- [핵심 2] 부분 리모델링 적용 (@st.fragment) ---
-# 이 함수 안에서 일어나는 일은 전체 화면을 새로고침하지 않음!
+# --- [핵심 수정] 부분 리모델링 함수 적용 (버퍼링 제거용) ---
 @st.fragment
-def render_passage_area(q):
-    st.subheader("2️⃣ 지문 독해")
-    
-    sentences = re.split(r'(?<=[.?!])\s+', str(q['passage']))
-    translations = re.split(r'(?<=[.?!])\s+', str(q['translation']))
-    
-    # 지문 전체를 HTML 한 덩어리로 생성
-    full_html = create_combined_html(sentences, translations, "passage", st.session_state.viewed_trans)
-    
-    # 감지기 1개로 전체 통제 (로딩 1번만 함)
-    clicked = click_detector(full_html, key="passage_detector")
-    
-    if clicked:
-        # 클릭된 ID 분석 (trans_... 인지 word_... 인지)
-        if clicked.startswith("trans_"):
-            # 해석 번호를 누른 경우
-            idx = int(clicked.split("_")[1])
-            if idx in st.session_state.viewed_trans:
-                st.session_state.viewed_trans.remove(idx)
-            else:
-                st.session_state.viewed_trans.add(idx)
-            st.rerun() # 프래그먼트 내부만 리런
-            
-        elif clicked.startswith("word_"):
-            # 단어를 누른 경우
-            if clicked in st.session_state.unknown_words:
-                st.session_state.unknown_words.remove(clicked)
-            else:
-                st.session_state.unknown_words.add(clicked)
-            st.rerun() # 프래그먼트 내부만 리런
-
-@st.fragment
-def render_options_area(q):
+def render_options_fragment(q):
     st.subheader("1️⃣ 보기 (클릭 = 형광펜)")
     try:
         opts = str(q['options']).split("^")
         opt_trans = str(q.get('option_trans', '')).split("^")
     except: opts, opt_trans = [], []
+
+    for i, opt in enumerate(opts):
+        c1, c2 = st.columns([0.5, 9.5])
+        with c1:
+            if st.button(f"({i+1})", key=f"btn_opt_{i}"):
+                if i in st.session_state.viewed_opt_trans: st.session_state.viewed_opt_trans.remove(i)
+                else: st.session_state.viewed_opt_trans.add(i)
+        with c2:
+            html = create_html(opt, f"opt_{i}")
+            # key에 render_id를 포함시켜서 클릭 시 새로운 감지기로 인식하게 함
+            clicked = click_detector(html, key=f"cd_opt_{i}_{st.session_state.render_id}")
+            if clicked:
+                if clicked in st.session_state.unknown_words: st.session_state.unknown_words.remove(clicked)
+                else: st.session_state.unknown_words.add(clicked)
+                st.session_state.render_id += 1
+                st.rerun() # 전체 새로고침이 아니라, 이 함수(fragment) 내부만 새로고침됨!
+            if i in st.session_state.viewed_opt_trans:
+                ot = opt_trans[i] if i < len(opt_trans) else ""
+                st.markdown(f"<div class='trans-box'>└ {ot}</div>", unsafe_allow_html=True)
+            else: st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
+
+@st.fragment
+def render_passage_fragment(q):
+    st.subheader("2️⃣ 지문 독해")
+    sentences = re.split(r'(?<=[.?!])\s+', str(q['passage']))
+    translations = re.split(r'(?<=[.?!])\s+', str(q['translation']))
     
-    # 보기 전체를 HTML 한 덩어리로 생성
-    full_html = create_combined_html(opts, opt_trans, "option", st.session_state.viewed_opt_trans)
-    
-    clicked = click_detector(full_html, key="option_detector")
-    
-    if clicked:
-        if clicked.startswith("trans_"):
-            idx = int(clicked.split("_")[1])
-            if idx in st.session_state.viewed_opt_trans:
-                st.session_state.viewed_opt_trans.remove(idx)
-            else:
-                st.session_state.viewed_opt_trans.add(idx)
-            st.rerun()
-            
-        elif clicked.startswith("word_"):
-            if clicked in st.session_state.unknown_words:
-                st.session_state.unknown_words.remove(clicked)
-            else:
-                st.session_state.unknown_words.add(clicked)
-            st.rerun()
+    for i, sent in enumerate(sentences):
+        c1, c2 = st.columns([0.5, 9.5])
+        with c1:
+            if st.button(f"({i+1})", key=f"btn_sent_{i}"):
+                if i in st.session_state.viewed_trans: st.session_state.viewed_trans.remove(i)
+                else: st.session_state.viewed_trans.add(i)
+        with c2:
+            html_s = create_html(sent, f"sent_{i}")
+            clicked_s = click_detector(html_s, key=f"cd_sent_{i}_{st.session_state.render_id}")
+            if clicked_s:
+                if clicked_s in st.session_state.unknown_words: st.session_state.unknown_words.remove(clicked_s)
+                else: st.session_state.unknown_words.add(clicked_s)
+                st.session_state.render_id += 1
+                st.rerun() # 여기도 이 부분만 빠릿하게 새로고침!
+            if i in st.session_state.viewed_trans:
+                t = translations[i] if i < len(translations) else ""
+                st.markdown(f"<div class='trans-box'>🇰🇷 {t}</div>", unsafe_allow_html=True)
+            else: st.markdown("<div style='margin-bottom:15px'></div>", unsafe_allow_html=True)
 
 # ===================== 메인 화면 =====================
 
+# 1. 로그인 화면
 if not st.session_state.user_name:
     st.title("📝 영어 숙제장")
     st.write("이름을 입력하고 숙제를 시작하세요.")
@@ -230,8 +156,9 @@ else:
                 mime="text/csv",
                 type="primary"
             )
+            st.info("👆 숙제를 마치고 버튼을 눌러 파일을 저장한 뒤 선생님께 보내주세요.")
 
-    # 문제 뽑기
+    # 2. 문제 뽑기
     if st.session_state.step == "new_question":
         if df.empty:
             st.error("데이터 파일이 없습니다.")
@@ -240,6 +167,7 @@ else:
         st.session_state.unknown_words = set()
         st.session_state.viewed_trans = set()
         st.session_state.viewed_opt_trans = set()
+        st.session_state.render_id = 0
         st.session_state.step = "solving"
         st.rerun()
 
@@ -248,17 +176,17 @@ else:
     st.markdown(f"#### 문제 {q['id']}")
     st.divider()
 
-    # [1] 보기 영역 (프래그먼트 적용)
-    render_options_area(q)
-    
-    st.divider()
-
-    # [2] 지문 영역 (프래그먼트 적용)
-    render_passage_area(q)
+    # [1] 보기 영역 (Fragment 적용됨)
+    render_options_fragment(q)
 
     st.divider()
 
-    # [3] 제출 영역
+    # [2] 지문 영역 (Fragment 적용됨)
+    render_passage_fragment(q)
+
+    st.divider()
+
+    # [3] 제출 영역 (여기는 전체 새로고침 필요)
     st.subheader("3️⃣ 정답 선택")
     with st.form("ans_form"):
         try:
