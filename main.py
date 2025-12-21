@@ -7,6 +7,7 @@ import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
+import pytz # [수정] 한국 시간 계산을 위해 라이브러리 추가
 
 # ===================== [1] 설정 및 데이터 로드 =====================
 
@@ -30,7 +31,7 @@ else:
 
 SPREADSHEET_KEY = "1Gtz2LYGjl9uGwbfsNc_NJJdgu68KybQYcep1ncQHCmU" 
 
-# [수정됨] 기존 get_google_sheet 대신 학생 이름으로 탭을 가져오거나 만드는 함수로 교체
+# 학생 이름으로 탭을 가져오거나 만드는 함수
 def get_student_sheet(student_name):
     if not creds: return None
     client = gspread.authorize(creds)
@@ -58,11 +59,11 @@ def load_data():
         print(f"데이터 로드 오류: {e}")
         return pd.DataFrame()
 
-# [추가] 유저 데이터 로드 (users.csv)
+# 유저 데이터 로드 (users.csv)
 def load_users():
     try:
         # id, password, name 컬럼이 있어야 함
-        users = pd.read_csv("users.csv")
+        users = pd.read_csv("users.csv", encoding='utf-8')
         users['id'] = users['id'].astype(str)
         users['password'] = users['password'].astype(str) # 비번은 문자로 처리
         return users
@@ -111,7 +112,6 @@ class HomeworkApp:
         input_id = self.id_input.value
         input_pw = self.pw_input.value
         
-        # users_df가 비었을 경우 다시 로드 시도 (혹시 모르니 추가)
         global users_df
         if users_df.empty: users_df = load_users()
 
@@ -139,15 +139,11 @@ class HomeworkApp:
             ui.label("오늘 학습할 내용을 선택하세요.").classes('text-gray-600 mb-6')
             
             with ui.grid(columns=2).classes('w-full gap-4'):
-                # 작동하는 버튼
                 with ui.card().classes('cursor-pointer hover:bg-green-50 transition p-4 flex flex-col items-center justify-center h-32 border-2 border-green-500'):
                     ui.icon('edit_note', size='3em', color='green')
                     ui.label('빈칸 추론').classes('font-bold text-lg mt-2')
                     ui.label('Click to Start').classes('text-xs text-gray-400')
-                # 카드 전체 클릭 시 이동하도록 투명 버튼 덮기 혹은 card에 on_click 이벤트
-                # NiceGUI card는 직접 click 이벤트가 없으므로 버튼으로 구현하거나 아래 방식 사용
                 
-            # 버튼 형태로 다시 깔끔하게 구현
             ui.separator().classes('my-4')
             
             btn_style = 'height: 60px; font-size: 16px;'
@@ -166,6 +162,7 @@ class HomeworkApp:
     def logout(self):
         self.user_name = ""
         self.user_id = ""
+        self.homework_log = []
         self.start_login()
 
     def update_sidebar(self):
@@ -182,15 +179,16 @@ class HomeworkApp:
         log_df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
         csv_buffer.seek(0)
         
-        file_date = datetime.now().strftime("%y%m%d")
+        # [수정] 파일 이름 날짜도 한국 시간으로 변경
+        kst = pytz.timezone('Asia/Seoul')
+        file_date = datetime.now(kst).strftime("%y%m%d")
         filename = f"{self.user_name}_{file_date}_숙제.csv"
         
         ui.download(csv_buffer.getvalue(), filename=filename)
 
-    # --- [수정됨] 구글 시트 문제 확인 (학생 탭에서 읽기) ---
+    # --- 구글 시트 문제 확인 (학생 탭에서 읽기) ---
     def get_solved_ids(self):
         try:
-            # 학생 이름으로 된 시트(탭)를 가져옵니다.
             sheet = get_student_sheet(self.user_name)
             if not sheet: return set()
             
@@ -199,7 +197,6 @@ class HomeworkApp:
             
             hist_df = pd.DataFrame(records)
             
-            # 이미 자기 시트에서 가져왔으므로 이름 필터링은 필요 없고, problem_id만 추출합니다.
             if 'problem_id' in hist_df.columns:
                 return set(hist_df['problem_id'].astype(str).unique())
             else:
@@ -211,7 +208,6 @@ class HomeworkApp:
 
     # --- [화면 3] 문제 풀기 화면 ---
     def load_new_question(self):
-        # 메뉴에서 뒤로가기 버튼 등을 위해 컨테이너 클리어
         self.main_container.clear()
         
         if df.empty:
@@ -244,7 +240,6 @@ class HomeworkApp:
             ui.button("메뉴로 돌아가기", on_click=self.render_menu).props('outline')
 
     def render_question_page(self):
-        # 상단에 '메뉴로' 버튼 추가
         with self.main_container:
             ui.button('⬅ 메뉴로', on_click=self.render_menu).props('flat dense icon=arrow_back').classes('mb-2')
             
@@ -325,7 +320,7 @@ class HomeworkApp:
             
             ui.button("➡️ 다음 문제", on_click=self.load_new_question).props('color=secondary').classes('mt-4')
 
-    # --- [수정됨] 로그 저장 (학생 탭에 저장) ---
+    # --- [수정됨] 로그 저장 (한국 시간 적용) ---
     def add_log(self, is_correct, user_ans):
         clean_words = []
         for w in self.unknown_words:
@@ -336,8 +331,12 @@ class HomeworkApp:
         viewed_opts_str = ", ".join(map(str, sorted([i+1 for i in self.viewed_opt_indices])))
         viewed_sents_str = ", ".join(map(str, sorted([i+1 for i in self.viewed_sent_indices])))
 
+        # [핵심] 한국 시간 가져오기
+        kst = pytz.timezone('Asia/Seoul')
+        now_kst = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
+
         log_data = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": now_kst, # 수정된 한국 시간
             "name": self.user_name,
             "problem_id": str(self.current_q['id']),
             "is_correct": "O" if is_correct else "X",
