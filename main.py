@@ -6,6 +6,15 @@ import io
 import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import streamlit as st
+import json
+from oauth2client.service_account import ServiceAccountCredentials
+
+# 1. 서버 금고(Secrets)에서 'google_key'라고 저장한 내용을 가져옴
+key_dict = json.loads(st.secrets["google_key"])
+
+# 2. 파일 이름 대신, 가져온 내용(key_dict)으로 인증함
+creds = ServiceAccountCredentials.from_json_keyfile_dict(key_dict, scope)
 
 # ===================== [1] 설정 및 데이터 로드 =====================
 
@@ -16,7 +25,6 @@ SPREADSHEET_KEY = "1Gtz2LYGjl9uGwbfsNc_NJJdgu68KybQYcep1ncQHCmU"
 def get_google_sheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     # 서비스 계정 키 파일이 같은 폴더에 있어야 합니다.
-    creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_KEY).sheet1  # 첫 번째 시트 사용
     return sheet
