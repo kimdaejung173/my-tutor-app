@@ -8,33 +8,32 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
 
+# ===================== [1] 설정 및 데이터 로드 =====================
+
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
 
-# 서버 설정(환경변수)에서 'GOOGLE_KEY'라는 이름으로 저장된 값을 가져옵니다.
 json_str = os.environ.get("GOOGLE_KEY") 
 
-# 만약 로컬(내 컴퓨터)에서 테스트할 때는 에러가 날 수 있으니 예외처리
 if json_str:
     key_dict = json.loads(json_str)
     creds = ServiceAccountCredentials.from_json_keyfile_dict(key_dict, scope)
 else:
-    print("경고: GOOGLE_KEY 환경변수가 없습니다.")
-    creds = None
+    # 로컬 테스트용 예외처리 (service_account.json 파일이 있다고 가정)
+    try:
+        creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
+    except:
+        print("경고: GOOGLE_KEY 환경변수도 없고 로컬 파일도 없습니다.")
+        creds = None
 
-# ===================== [1] 설정 및 데이터 로드 =====================
-
-# [중요] 여기에 구글 스프레드시트 주소 중간에 있는 ID를 복사해서 넣으세요.
 SPREADSHEET_KEY = "1Gtz2LYGjl9uGwbfsNc_NJJdgu68KybQYcep1ncQHCmU" 
 
-# 구글 시트 인증 함수
 def get_google_sheet():
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    # 서비스 계정 키 파일이 같은 폴더에 있어야 합니다.
+    if not creds: return None
     client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_KEY).sheet1  # 첫 번째 시트 사용
+    sheet = client.open_by_key(SPREADSHEET_KEY).sheet1
     return sheet
 
 def load_data():
@@ -46,12 +45,26 @@ def load_data():
         print(f"데이터 로드 오류: {e}")
         return pd.DataFrame()
 
+# [추가] 유저 데이터 로드 (users.csv)
+def load_users():
+    try:
+        # id, password, name 컬럼이 있어야 함
+        users = pd.read_csv("users.csv")
+        users['id'] = users['id'].astype(str)
+        users['password'] = users['password'].astype(str) # 비번은 문자로 처리
+        return users
+    except Exception as e:
+        print(f"유저 파일 로드 오류: {e}")
+        return pd.DataFrame()
+
 df = load_data()
+users_df = load_users()
 
 # ===================== [2] 앱 로직 클래스 =====================
 class HomeworkApp:
     def __init__(self):
         self.user_name = ""
+        self.user_id = "" # 아이디 저장용
         self.homework_log = [] 
         self.current_q = None
         self.unknown_words = set()
@@ -64,26 +77,83 @@ class HomeworkApp:
         self.log_count_label = None
         self.result_container = None 
 
+    # --- [화면 1] 로그인 화면 ---
     def start_login(self):
         self.main_container.clear()
         with self.main_container:
-            ui.markdown("# 📝 영어 숙제장 (Online)")
-            ui.label("구글 시트에 기록이 자동 저장됩니다.").classes('mb-2 text-gray-600')
-            name_input = ui.input("이름").classes('w-64')
-            name_input.on('keydown.enter', lambda: self.process_login(name_input.value))
-            ui.button("숙제 시작하기", on_click=lambda: self.process_login(name_input.value)).props('color=primary')
+            ui.markdown("# 🔒 1등급 과외 숙제장").classes('text-center w-full')
+            
+            with ui.card().classes('w-full max-w-sm mx-auto p-4 flex flex-col gap-2'):
+                ui.label("로그인").classes('text-lg font-bold mb-2')
+                
+                self.id_input = ui.input("아이디").classes('w-full')
+                self.pw_input = ui.input("비밀번호", password=True).classes('w-full')
+                
+                # 엔터키 이벤트 연결
+                self.pw_input.on('keydown.enter', self.process_login)
+                
+                ui.button("로그인", on_click=self.process_login).props('color=primary').classes('w-full mt-2')
 
-    def process_login(self, name):
-        if not name:
-            ui.notify("이름을 입력해주세요.", type='warning')
+    def process_login(self):
+        input_id = self.id_input.value
+        input_pw = self.pw_input.value
+        
+        if users_df.empty:
+            ui.notify("유저 정보(users.csv)가 없습니다.", type='negative')
             return
-        self.user_name = name.strip()
-        self.update_sidebar()
-        self.load_new_question()
+
+        # 아이디/비번 대조
+        user_row = users_df[(users_df['id'] == input_id) & (users_df['password'] == input_pw)]
+        
+        if not user_row.empty:
+            self.user_name = user_row.iloc[0]['name']
+            self.user_id = input_id
+            ui.notify(f"환영합니다, {self.user_name} 학생!", type='positive')
+            self.update_sidebar()
+            self.render_menu() # 메뉴 화면으로 이동
+        else:
+            ui.notify("아이디 또는 비밀번호가 틀렸습니다.", type='negative')
+
+    # --- [화면 2] 메뉴 선택 화면 (대시보드) ---
+    def render_menu(self):
+        self.main_container.clear()
+        with self.main_container:
+            ui.markdown(f"## 👋 반가워요, {self.user_name} 학생!").classes('mb-4')
+            ui.label("오늘 학습할 내용을 선택하세요.").classes('text-gray-600 mb-6')
+            
+            with ui.grid(columns=2).classes('w-full gap-4'):
+                # 작동하는 버튼
+                with ui.card().classes('cursor-pointer hover:bg-green-50 transition p-4 flex flex-col items-center justify-center h-32 border-2 border-green-500'):
+                    ui.icon('edit_note', size='3em', color='green')
+                    ui.label('빈칸 추론').classes('font-bold text-lg mt-2')
+                    ui.label('Click to Start').classes('text-xs text-gray-400')
+                # 카드 전체 클릭 시 이동하도록 투명 버튼 덮기 혹은 card에 on_click 이벤트
+                # NiceGUI card는 직접 click 이벤트가 없으므로 버튼으로 구현하거나 아래 방식 사용
+                
+            # 버튼 형태로 다시 깔끔하게 구현
+            ui.separator().classes('my-4')
+            
+            btn_style = 'height: 60px; font-size: 16px;'
+            
+            ui.button("📝 빈칸 추론", on_click=self.load_new_question).props('color=primary icon=edit').style(btn_style).classes('w-full')
+            
+            # 준비 중인 버튼들
+            ui.button("🔀 순서 배열 (준비중)").props('color=grey outline').style(btn_style).classes('w-full').disable()
+            ui.button("📥 문장 삽입 (준비중)").props('color=grey outline').style(btn_style).classes('w-full').disable()
+            ui.button("💡 주제 찾기 (준비중)").props('color=grey outline').style(btn_style).classes('w-full').disable()
+            ui.button("🏷️ 제목 찾기 (준비중)").props('color=grey outline').style(btn_style).classes('w-full').disable()
+            
+            ui.separator().classes('my-4')
+            ui.button("로그아웃", on_click=self.logout).props('flat color=grey').classes('w-full')
+
+    def logout(self):
+        self.user_name = ""
+        self.user_id = ""
+        self.start_login()
 
     def update_sidebar(self):
         if self.sidebar_label:
-            self.sidebar_label.set_text(f"👤 {self.user_name} 학생")
+            self.sidebar_label.set_text(f"👤 {self.user_name} ({self.user_id})")
             self.log_count_label.set_text(f"이번 세션: {len(self.homework_log)}문제")
 
     def download_csv(self):
@@ -100,53 +170,50 @@ class HomeworkApp:
         
         ui.download(csv_buffer.getvalue(), filename=filename)
 
-    # --- [핵심] 구글 시트에서 푼 문제 확인 ---
+    # --- [기능] 구글 시트 문제 확인 ---
     def get_solved_ids(self):
         try:
             sheet = get_google_sheet()
-            records = sheet.get_all_records() # 모든 기록 가져오기
+            if not sheet: return set()
+            records = sheet.get_all_records()
             
-            # 기록이 없으면 빈 집합 반환
-            if not records:
-                return set()
+            if not records: return set()
             
-            # Pandas DF로 변환해서 필터링 (편의상)
             hist_df = pd.DataFrame(records)
             
-            # 현재 접속한 학생의 이름으로 필터링
+            # [수정] 아이디(user_id) 혹은 이름(name)으로 필터링
+            # 이름 동명이인 이슈를 피하려면 user_id로 하는 게 좋으나, 
+            # 기존 데이터가 name 기반일 수 있으므로 일단 name 유지 (원하시면 id로 변경 가능)
             if 'name' in hist_df.columns and 'problem_id' in hist_df.columns:
-                # 숫자/문자 혼용 방지를 위해 전부 string으로 변환 후 비교
                 user_hist = hist_df[hist_df['name'].astype(str) == self.user_name]
                 return set(user_hist['problem_id'].astype(str).unique())
             else:
                 return set()
-                
         except Exception as e:
             print(f"구글 시트 읽기 오류: {e}")
             ui.notify("기록을 불러오는 중 오류가 발생했습니다.", type='negative')
             return set()
 
+    # --- [화면 3] 문제 풀기 화면 ---
     def load_new_question(self):
+        # 메뉴에서 뒤로가기 버튼 등을 위해 컨테이너 클리어
+        self.main_container.clear()
+        
         if df.empty:
-            ui.notify("문제 데이터(data.csv)가 없습니다.", type='negative')
+            ui.notify("문제 데이터가 없습니다.", type='negative')
             return
 
-        # 1. 구글 시트에서 푼 문제 번호 가져오기 (로딩 표시)
         ui.notify("기록 확인 중...", type='info', timeout=1000)
         solved_ids = self.get_solved_ids()
         
-        # 2. 안 푼 문제 필터링
         remaining_df = df[~df['id'].isin(solved_ids)]
         
-        # 3. 완료 화면
         if remaining_df.empty:
             self.render_completion_page()
             return
 
-        # 4. 문제 뽑기
         self.current_q = remaining_df.sample(1).iloc[0]
         
-        # 상태 초기화
         self.unknown_words = set()
         self.viewed_opt_indices = set()
         self.viewed_sent_indices = set()
@@ -157,14 +224,16 @@ class HomeworkApp:
         self.main_container.clear()
         with self.main_container:
             ui.markdown(f"## 🎉 축하합니다, {self.user_name} 학생!")
-            ui.label("모든 문제를 다 풀었습니다.").classes('text-xl text-green-600 font-bold mb-4')
+            ui.label("준비된 모든 문제를 풀었습니다.").classes('text-xl text-green-600 font-bold mb-4')
             ui.run_javascript('confetti()') 
+            ui.button("메뉴로 돌아가기", on_click=self.render_menu).props('outline')
 
     def render_question_page(self):
-        self.main_container.clear()
-        q = self.current_q
-        
+        # 상단에 '메뉴로' 버튼 추가
         with self.main_container:
+            ui.button('⬅ 메뉴로', on_click=self.render_menu).props('flat dense icon=arrow_back').classes('mb-2')
+            
+            q = self.current_q
             ui.markdown(f"#### 문제 {q['id']}") 
             ui.separator()
 
@@ -251,7 +320,6 @@ class HomeworkApp:
         viewed_opts_str = ", ".join(map(str, sorted([i+1 for i in self.viewed_opt_indices])))
         viewed_sents_str = ", ".join(map(str, sorted([i+1 for i in self.viewed_sent_indices])))
 
-        # 로그 데이터 구성
         log_data = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "name": self.user_name,
@@ -263,17 +331,12 @@ class HomeworkApp:
             "unknown_words": ", ".join(sorted(list(set(clean_words))))
         }
         
-        # 1. 세션 기록 (다운로드용)
         self.homework_log.append(log_data)
         
-        # 2. [핵심] 구글 시트에 저장
         try:
             sheet = get_google_sheet()
-            # 첫 번째 행(헤더)이 비어있으면 헤더 추가
             if not sheet.get_all_values():
                 sheet.append_row(list(log_data.keys()))
-            
-            # 데이터 추가
             sheet.append_row(list(log_data.values()))
         except Exception as e:
             print(f"구글 시트 저장 실패: {e}")
@@ -322,8 +385,8 @@ def main():
     app_logic = HomeworkApp()
 
     with ui.left_drawer(value=True).props('width=250 bordered').classes('bg-gray-50 q-pa-md') as drawer:
-        app_logic.sidebar_label = ui.label("👤 학생 정보 없음").classes('font-bold text-lg mb-2')
-        app_logic.log_count_label = ui.label("이번 세션: 0문제").classes('mb-4 text-gray-700')
+        app_logic.sidebar_label = ui.label("👤 로그인 필요").classes('font-bold text-lg mb-2')
+        app_logic.log_count_label = ui.label("").classes('mb-4 text-gray-700')
         ui.separator().classes('mb-4')
         ui.button("📥 결과 파일 다운로드", on_click=app_logic.download_csv).props('icon=download flat color=primary align=left').classes('w-full')
         ui.label("👆 오늘 푼 것만 다운로드 됩니다.").classes('text-xs text-gray-500 mt-2')
@@ -333,7 +396,8 @@ def main():
         ui.label('영어 숙제장').classes('text-lg font-bold ml-2')
 
     app_logic.main_container = ui.column().classes('w-full max-w-screen-lg mx-auto p-6 bg-white')
+    
+    # 시작을 로그인 화면으로
     app_logic.start_login()
 
-# 포트 번호를 서버가 주는 대로 받거나, 없으면 8080을 씁니다.
 ui.run(title="영어 숙제", host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), reload=False, show=False)
