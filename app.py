@@ -5,6 +5,7 @@ import os
 import time
 from datetime import datetime
 from st_click_detector import click_detector
+import streamlit.components.v1 as components  # [추가] 자바스크립트 제어용
 
 # --- 페이지 설정 ---
 st.set_page_config(page_title="영어 숙제", layout="wide")
@@ -28,6 +29,19 @@ if 'viewed_trans' not in st.session_state: st.session_state.viewed_trans = set()
 if 'viewed_opt_trans' not in st.session_state: st.session_state.viewed_opt_trans = set()
 if 'render_id' not in st.session_state: st.session_state.render_id = 0
 if 'homework_log' not in st.session_state: st.session_state.homework_log = []
+if 'scroll_target' not in st.session_state: st.session_state.scroll_target = None # [추가] 스크롤 목표 지점
+
+# --- 자바스크립트 스크롤 함수 [추가] ---
+def scroll_to_view(element_id):
+    js = f"""
+    <script>
+        var element = window.parent.document.getElementById('{element_id}');
+        if (element) {{
+            element.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+        }}
+    </script>
+    """
+    components.html(js, height=0)
 
 # --- 데이터 로드 ---
 @st.cache_data
@@ -88,8 +102,12 @@ def render_options_fragment(q):
         c1, c2 = st.columns([0.5, 9.5])
         with c1:
             if st.button(f"({i+1})", key=f"btn_opt_{i}"):
-                if i in st.session_state.viewed_opt_trans: st.session_state.viewed_opt_trans.remove(i)
-                else: st.session_state.viewed_opt_trans.add(i)
+                if i in st.session_state.viewed_opt_trans: 
+                    st.session_state.viewed_opt_trans.remove(i)
+                else: 
+                    st.session_state.viewed_opt_trans.add(i)
+                    # [추가] 열릴 때 스크롤 타겟 지정
+                    st.session_state.scroll_target = f"opt_box_{i}"
                 st.rerun() # Fragment 내부만 리런
         with c2:
             html = create_html(opt, f"opt_{i}")
@@ -101,9 +119,17 @@ def render_options_fragment(q):
                 st.session_state.render_id += 1
                 st.rerun() # Fragment 내부만 리런
             
+            # [수정] ID 부여 및 스크롤 로직 적용
+            target_id = f"opt_box_{i}"
             if i in st.session_state.viewed_opt_trans:
                 ot = opt_trans[i] if i < len(opt_trans) else ""
-                st.markdown(f"<div class='trans-box'>└ {ot}</div>", unsafe_allow_html=True)
+                # ID 태그 추가
+                st.markdown(f"<div id='{target_id}' class='trans-box'>└ {ot}</div>", unsafe_allow_html=True)
+                
+                # [추가] 스크롤 실행 (타겟과 일치할 경우)
+                if st.session_state.scroll_target == target_id:
+                    scroll_to_view(target_id)
+                    st.session_state.scroll_target = None # 실행 후 초기화
             else: 
                 st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
 
@@ -118,8 +144,12 @@ def render_passage_fragment(q):
         c1, c2 = st.columns([0.5, 9.5])
         with c1:
             if st.button(f"({i+1})", key=f"btn_sent_{i}"):
-                if i in st.session_state.viewed_trans: st.session_state.viewed_trans.remove(i)
-                else: st.session_state.viewed_trans.add(i)
+                if i in st.session_state.viewed_trans: 
+                    st.session_state.viewed_trans.remove(i)
+                else: 
+                    st.session_state.viewed_trans.add(i)
+                    # [추가] 열릴 때 스크롤 타겟 지정
+                    st.session_state.scroll_target = f"trans_box_{i}"
                 st.rerun() # Fragment 내부만 리런
         with c2:
             html_s = create_html(sent, f"sent_{i}")
@@ -130,9 +160,17 @@ def render_passage_fragment(q):
                 st.session_state.render_id += 1
                 st.rerun() # Fragment 내부만 리런
             
+            # [수정] ID 부여 및 스크롤 로직 적용
+            target_id = f"trans_box_{i}"
             if i in st.session_state.viewed_trans:
                 t = translations[i] if i < len(translations) else ""
-                st.markdown(f"<div class='trans-box'>🇰🇷 {t}</div>", unsafe_allow_html=True)
+                # ID 태그 추가
+                st.markdown(f"<div id='{target_id}' class='trans-box'>🇰🇷 {t}</div>", unsafe_allow_html=True)
+                
+                # [추가] 스크롤 실행
+                if st.session_state.scroll_target == target_id:
+                    scroll_to_view(target_id)
+                    st.session_state.scroll_target = None
             else: 
                 st.markdown("<div style='margin-bottom:15px'></div>", unsafe_allow_html=True)
 
