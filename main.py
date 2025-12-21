@@ -8,7 +8,11 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import streamlit as st
 import json
-from oauth2client.service_account import ServiceAccountCredentials
+
+scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive"
+]
 
 # 1. 서버 금고(Secrets)에서 'google_key'라고 저장한 내용을 가져옴
 key_dict = json.loads(st.secrets["google_key"])
