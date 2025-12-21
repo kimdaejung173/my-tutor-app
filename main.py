@@ -336,4 +336,4 @@ def main():
     app_logic.start_login()
 
 # 포트 번호를 서버가 주는 대로 받거나, 없으면 8080을 씁니다.
-ui.run(title="영어 숙제", port=int(os.environ.get("PORT", 8080)), reload=False, show=False)
+ui.run(title="영어 숙제", host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), reload=False, show=False)
