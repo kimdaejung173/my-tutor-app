@@ -30,10 +30,23 @@ else:
 
 SPREADSHEET_KEY = "1Gtz2LYGjl9uGwbfsNc_NJJdgu68KybQYcep1ncQHCmU" 
 
-def get_google_sheet():
+# [수정됨] 기존 get_google_sheet 대신 학생 이름으로 탭을 가져오거나 만드는 함수로 교체
+def get_student_sheet(student_name):
     if not creds: return None
     client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_KEY).sheet1
+    spreadsheet = client.open_by_key(SPREADSHEET_KEY)
+    
+    try:
+        # 1. 학생 이름으로 된 시트(탭)가 있는지 확인
+        sheet = spreadsheet.worksheet(student_name)
+    except gspread.WorksheetNotFound:
+        # 2. 없으면 새로 생성 (탭 이름 = 학생 이름)
+        sheet = spreadsheet.add_worksheet(title=student_name, rows=100, cols=10)
+        # 헤더(첫 줄) 추가
+        sheet.append_row([
+            "timestamp", "name", "problem_id", "is_correct", 
+            "user_answer", "viewed_sentences", "viewed_options", "unknown_words"
+        ])
     return sheet
 
 def load_data():
@@ -98,6 +111,10 @@ class HomeworkApp:
         input_id = self.id_input.value
         input_pw = self.pw_input.value
         
+        # users_df가 비었을 경우 다시 로드 시도 (혹시 모르니 추가)
+        global users_df
+        if users_df.empty: users_df = load_users()
+
         if users_df.empty:
             ui.notify("유저 정보(users.csv)가 없습니다.", type='negative')
             return
@@ -170,23 +187,21 @@ class HomeworkApp:
         
         ui.download(csv_buffer.getvalue(), filename=filename)
 
-    # --- [기능] 구글 시트 문제 확인 ---
+    # --- [수정됨] 구글 시트 문제 확인 (학생 탭에서 읽기) ---
     def get_solved_ids(self):
         try:
-            sheet = get_google_sheet()
+            # 학생 이름으로 된 시트(탭)를 가져옵니다.
+            sheet = get_student_sheet(self.user_name)
             if not sheet: return set()
-            records = sheet.get_all_records()
             
+            records = sheet.get_all_records()
             if not records: return set()
             
             hist_df = pd.DataFrame(records)
             
-            # [수정] 아이디(user_id) 혹은 이름(name)으로 필터링
-            # 이름 동명이인 이슈를 피하려면 user_id로 하는 게 좋으나, 
-            # 기존 데이터가 name 기반일 수 있으므로 일단 name 유지 (원하시면 id로 변경 가능)
-            if 'name' in hist_df.columns and 'problem_id' in hist_df.columns:
-                user_hist = hist_df[hist_df['name'].astype(str) == self.user_name]
-                return set(user_hist['problem_id'].astype(str).unique())
+            # 이미 자기 시트에서 가져왔으므로 이름 필터링은 필요 없고, problem_id만 추출합니다.
+            if 'problem_id' in hist_df.columns:
+                return set(hist_df['problem_id'].astype(str).unique())
             else:
                 return set()
         except Exception as e:
@@ -310,6 +325,7 @@ class HomeworkApp:
             
             ui.button("➡️ 다음 문제", on_click=self.load_new_question).props('color=secondary').classes('mt-4')
 
+    # --- [수정됨] 로그 저장 (학생 탭에 저장) ---
     def add_log(self, is_correct, user_ans):
         clean_words = []
         for w in self.unknown_words:
@@ -334,9 +350,8 @@ class HomeworkApp:
         self.homework_log.append(log_data)
         
         try:
-            sheet = get_google_sheet()
-            if not sheet.get_all_values():
-                sheet.append_row(list(log_data.keys()))
+            # 학생 이름으로 된 탭을 가져와서 저장
+            sheet = get_student_sheet(self.user_name)
             sheet.append_row(list(log_data.values()))
         except Exception as e:
             print(f"구글 시트 저장 실패: {e}")
