@@ -1,4 +1,4 @@
-streamlit
-openai
+nicegui
 pandas
-st-click-detector
+gspread
+oauth2client
