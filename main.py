@@ -10,7 +10,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # ===================== [1] 설정 및 데이터 로드 =====================
 
 # [중요] 여기에 구글 스프레드시트 주소 중간에 있는 ID를 복사해서 넣으세요.
-SPREADSHEET_KEY = "여기에_스프레드시트_ID를_넣으세요" 
+SPREADSHEET_KEY = "1Gtz2LYGjl9uGwbfsNc_NJJdgu68KybQYcep1ncQHCmU" 
 
 # 구글 시트 인증 함수
 def get_google_sheet():
