@@ -6,7 +6,6 @@ import io
 import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import streamlit as st
 import json
 
 scope = [
@@ -14,11 +13,16 @@ scope = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-# 1. 서버 금고(Secrets)에서 'google_key'라고 저장한 내용을 가져옴
-key_dict = json.loads(st.secrets["google_key"])
+# 서버 설정(환경변수)에서 'GOOGLE_KEY'라는 이름으로 저장된 값을 가져옵니다.
+json_str = os.environ.get("GOOGLE_KEY") 
 
-# 2. 파일 이름 대신, 가져온 내용(key_dict)으로 인증함
-creds = ServiceAccountCredentials.from_json_keyfile_dict(key_dict, scope)
+# 만약 로컬(내 컴퓨터)에서 테스트할 때는 에러가 날 수 있으니 예외처리
+if json_str:
+    key_dict = json.loads(json_str)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(key_dict, scope)
+else:
+    print("경고: GOOGLE_KEY 환경변수가 없습니다.")
+    creds = None
 
 # ===================== [1] 설정 및 데이터 로드 =====================
 
@@ -331,4 +335,5 @@ def main():
     app_logic.main_container = ui.column().classes('w-full max-w-screen-lg mx-auto p-6 bg-white')
     app_logic.start_login()
 
-ui.run(title="영어 숙제", port=8080, reload=False, show=True)
+# 포트 번호를 서버가 주는 대로 받거나, 없으면 8080을 씁니다.
+ui.run(title="영어 숙제", port=int(os.environ.get("PORT", 8080)), reload=False, show=False)
