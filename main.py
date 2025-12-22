@@ -7,7 +7,7 @@ import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
-import pytz # [수정] 한국 시간 계산을 위해 라이브러리 추가
+import pytz 
 
 # ===================== [1] 설정 및 데이터 로드 =====================
 
@@ -22,7 +22,6 @@ if json_str:
     key_dict = json.loads(json_str)
     creds = ServiceAccountCredentials.from_json_keyfile_dict(key_dict, scope)
 else:
-    # 로컬 테스트용 예외처리 (service_account.json 파일이 있다고 가정)
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
     except:
@@ -31,19 +30,17 @@ else:
 
 SPREADSHEET_KEY = "1Gtz2LYGjl9uGwbfsNc_NJJdgu68KybQYcep1ncQHCmU" 
 
-# 학생 이름으로 탭을 가져오거나 만드는 함수
 def get_student_sheet(student_name):
     if not creds: return None
     client = gspread.authorize(creds)
     spreadsheet = client.open_by_key(SPREADSHEET_KEY)
     
     try:
-        # 1. 학생 이름으로 된 시트(탭)가 있는지 확인
+        # 학생 이름(ID)으로 된 탭이 있는지 확인
         sheet = spreadsheet.worksheet(student_name)
     except gspread.WorksheetNotFound:
-        # 2. 없으면 새로 생성 (탭 이름 = 학생 이름)
+        # 없으면 새로 생성
         sheet = spreadsheet.add_worksheet(title=student_name, rows=100, cols=10)
-        # 헤더(첫 줄) 추가
         sheet.append_row([
             "timestamp", "name", "problem_id", "is_correct", 
             "user_answer", "viewed_sentences", "viewed_options", "unknown_words"
@@ -59,13 +56,13 @@ def load_data():
         print(f"데이터 로드 오류: {e}")
         return pd.DataFrame()
 
-# 유저 데이터 로드 (users.csv)
+# [수정] id와 password만 있으면 됩니다.
 def load_users():
     try:
-        # id, password, name 컬럼이 있어야 함
+        # 한글 ID를 읽어야 하므로 utf-8 필수
         users = pd.read_csv("users.csv", encoding='utf-8')
         users['id'] = users['id'].astype(str)
-        users['password'] = users['password'].astype(str) # 비번은 문자로 처리
+        users['password'] = users['password'].astype(str)
         return users
     except Exception as e:
         print(f"유저 파일 로드 오류: {e}")
@@ -77,8 +74,7 @@ users_df = load_users()
 # ===================== [2] 앱 로직 클래스 =====================
 class HomeworkApp:
     def __init__(self):
-        self.user_name = ""
-        self.user_id = "" # 아이디 저장용
+        self.user_name = "" # 여기에 한글 이름(ID)이 들어갑니다
         self.homework_log = [] 
         self.current_q = None
         self.unknown_words = set()
@@ -100,10 +96,10 @@ class HomeworkApp:
             with ui.card().classes('w-full max-w-sm mx-auto p-4 flex flex-col gap-2'):
                 ui.label("로그인").classes('text-lg font-bold mb-2')
                 
-                self.id_input = ui.input("아이디").classes('w-full')
+                # 라벨을 '이름(ID)'로 변경하여 혼란 방지
+                self.id_input = ui.input("이름 (ID)").classes('w-full') 
                 self.pw_input = ui.input("비밀번호", password=True).classes('w-full')
                 
-                # 엔터키 이벤트 연결
                 self.pw_input.on('keydown.enter', self.process_login)
                 
                 ui.button("로그인", on_click=self.process_login).props('color=primary').classes('w-full mt-2')
@@ -123,15 +119,16 @@ class HomeworkApp:
         user_row = users_df[(users_df['id'] == input_id) & (users_df['password'] == input_pw)]
         
         if not user_row.empty:
-            self.user_name = user_row.iloc[0]['name']
-            self.user_id = input_id
+            # [수정] 별도의 name 컬럼을 찾지 않고, 입력한 ID를 그대로 이름으로 사용
+            self.user_name = input_id 
+            
             ui.notify(f"환영합니다, {self.user_name} 학생!", type='positive')
             self.update_sidebar()
-            self.render_menu() # 메뉴 화면으로 이동
+            self.render_menu() 
         else:
-            ui.notify("아이디 또는 비밀번호가 틀렸습니다.", type='negative')
+            ui.notify("이름(ID) 또는 비밀번호가 틀렸습니다.", type='negative')
 
-    # --- [화면 2] 메뉴 선택 화면 (대시보드) ---
+    # --- [화면 2] 메뉴 선택 화면 ---
     def render_menu(self):
         self.main_container.clear()
         with self.main_container:
@@ -150,7 +147,6 @@ class HomeworkApp:
             
             ui.button("📝 빈칸 추론", on_click=self.load_new_question).props('color=primary icon=edit').style(btn_style).classes('w-full')
             
-            # 준비 중인 버튼들
             ui.button("🔀 순서 배열 (준비중)").props('color=grey outline').style(btn_style).classes('w-full').disable()
             ui.button("📥 문장 삽입 (준비중)").props('color=grey outline').style(btn_style).classes('w-full').disable()
             ui.button("💡 주제 찾기 (준비중)").props('color=grey outline').style(btn_style).classes('w-full').disable()
@@ -161,13 +157,13 @@ class HomeworkApp:
 
     def logout(self):
         self.user_name = ""
-        self.user_id = ""
         self.homework_log = []
         self.start_login()
 
     def update_sidebar(self):
         if self.sidebar_label:
-            self.sidebar_label.set_text(f"👤 {self.user_name} ({self.user_id})")
+            # ID가 곧 이름이므로 하나만 표시
+            self.sidebar_label.set_text(f"👤 {self.user_name}")
             self.log_count_label.set_text(f"이번 세션: {len(self.homework_log)}문제")
 
     def download_csv(self):
@@ -179,14 +175,13 @@ class HomeworkApp:
         log_df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
         csv_buffer.seek(0)
         
-        # [수정] 파일 이름 날짜도 한국 시간으로 변경
         kst = pytz.timezone('Asia/Seoul')
         file_date = datetime.now(kst).strftime("%y%m%d")
         filename = f"{self.user_name}_{file_date}_숙제.csv"
         
         ui.download(csv_buffer.getvalue(), filename=filename)
 
-    # --- 구글 시트 문제 확인 (학생 탭에서 읽기) ---
+    # --- 구글 시트 문제 확인 ---
     def get_solved_ids(self):
         try:
             sheet = get_student_sheet(self.user_name)
@@ -320,7 +315,6 @@ class HomeworkApp:
             
             ui.button("➡️ 다음 문제", on_click=self.load_new_question).props('color=secondary').classes('mt-4')
 
-    # --- [수정됨] 로그 저장 (한국 시간 적용) ---
     def add_log(self, is_correct, user_ans):
         clean_words = []
         for w in self.unknown_words:
@@ -331,13 +325,12 @@ class HomeworkApp:
         viewed_opts_str = ", ".join(map(str, sorted([i+1 for i in self.viewed_opt_indices])))
         viewed_sents_str = ", ".join(map(str, sorted([i+1 for i in self.viewed_sent_indices])))
 
-        # [핵심] 한국 시간 가져오기
         kst = pytz.timezone('Asia/Seoul')
         now_kst = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
 
         log_data = {
-            "timestamp": now_kst, # 수정된 한국 시간
-            "name": self.user_name,
+            "timestamp": now_kst,
+            "name": self.user_name, # 여기서도 그냥 ID(이름)가 저장됨
             "problem_id": str(self.current_q['id']),
             "is_correct": "O" if is_correct else "X",
             "user_answer": user_ans,
@@ -349,7 +342,6 @@ class HomeworkApp:
         self.homework_log.append(log_data)
         
         try:
-            # 학생 이름으로 된 탭을 가져와서 저장
             sheet = get_student_sheet(self.user_name)
             sheet.append_row(list(log_data.values()))
         except Exception as e:
@@ -410,8 +402,6 @@ def main():
         ui.label('영어 숙제장').classes('text-lg font-bold ml-2')
 
     app_logic.main_container = ui.column().classes('w-full max-w-screen-lg mx-auto p-6 bg-white')
-    
-    # 시작을 로그인 화면으로
     app_logic.start_login()
 
 ui.run(title="영어 숙제", host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), reload=False, show=False)
