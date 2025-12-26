@@ -56,13 +56,10 @@ def load_data():
         print(f"데이터 로드 오류: {e}")
         return pd.DataFrame()
 
-# [수정] id와 password만 있으면 됩니다.
 def load_users():
     try:
-        # 한글 ID를 읽어야 하므로 utf-8 필수
-        users = pd.read_csv("users.csv", encoding='utf-8')
-        users['id'] = users['id'].astype(str)
-        users['password'] = users['password'].astype(str)
+        # dtype=str 옵션을 넣으면 0331을 숫자로 안 바꾸고 그대로 "0331"로 가져옵니다.
+        users = pd.read_csv("users.csv", encoding='utf-8', dtype=str)
         return users
     except Exception as e:
         print(f"유저 파일 로드 오류: {e}")
@@ -119,14 +116,48 @@ class HomeworkApp:
         user_row = users_df[(users_df['id'] == input_id) & (users_df['password'] == input_pw)]
         
         if not user_row.empty:
-            # [수정] 별도의 name 컬럼을 찾지 않고, 입력한 ID를 그대로 이름으로 사용
             self.user_name = input_id 
             
+            # [추가됨] 관리자(김태현) 확인 로직
+            if self.user_name == "김태현":
+                ui.notify(f"관리자 모드로 접속합니다.", type='positive')
+                self.update_sidebar()
+                self.render_admin_page() # 관리자 화면으로 이동
+                return
+
+            # 일반 학생은 기존대로 이동
             ui.notify(f"환영합니다, {self.user_name} 학생!", type='positive')
             self.update_sidebar()
             self.render_menu() 
         else:
             ui.notify("이름(ID) 또는 비밀번호가 틀렸습니다.", type='negative')
+
+    # --- [추가됨] 관리자 전용 화면 ---
+    def render_admin_page(self):
+        self.main_container.clear()
+        with self.main_container:
+            ui.label("👮‍♂️ 관리자 모드 (문제 DB 확인)").classes('text-2xl font-bold mb-4')
+            
+            if df.empty:
+                ui.label("등록된 문제가 없습니다.").classes('text-red-500')
+            else:
+                ui.label(f"현재 등록된 총 문제 수: {len(df)}개").classes('text-gray-600 mb-4')
+                
+                # 테이블 컬럼 정의
+                columns = [
+                    {'name': 'id', 'label': '문제ID', 'field': 'id', 'sortable': True, 'align': 'left'},
+                    {'name': 'answer', 'label': '정답', 'field': 'answer', 'sortable': True, 'align': 'center'},
+                    # 지문은 너무 기니까 앞부분만 보여주기
+                    {'name': 'passage', 'label': '지문(미리보기)', 'field': 'passage', 'align': 'left', 
+                     'format': lambda val: (val[:40] + '...') if isinstance(val, str) and len(val) > 40 else val}
+                ]
+                
+                # 테이블 생성 (검색 기능 포함)
+                with ui.card().classes('w-full'):
+                    ui.table(columns=columns, rows=df.to_dict('records'), row_key='id').classes('w-full').props('dense flat')
+
+            ui.separator().classes('my-6')
+            ui.button("로그아웃", on_click=self.logout).props('color=grey').classes('w-full')
 
     # --- [화면 2] 메뉴 선택 화면 ---
     def render_menu(self):
@@ -330,7 +361,7 @@ class HomeworkApp:
 
         log_data = {
             "timestamp": now_kst,
-            "name": self.user_name, # 여기서도 그냥 ID(이름)가 저장됨
+            "name": self.user_name,
             "problem_id": str(self.current_q['id']),
             "is_correct": "O" if is_correct else "X",
             "user_answer": user_ans,
