@@ -132,7 +132,7 @@ class HomeworkApp:
         else:
             ui.notify("이름(ID) 또는 비밀번호가 틀렸습니다.", type='negative')
 
-    # --- [추가됨] 관리자 전용 화면 ---
+# --- [수정됨] 관리자 전용 화면 (에러 수정) ---
     def render_admin_page(self):
         self.main_container.clear()
         with self.main_container:
@@ -143,18 +143,26 @@ class HomeworkApp:
             else:
                 ui.label(f"현재 등록된 총 문제 수: {len(df)}개").classes('text-gray-600 mb-4')
                 
-                # 테이블 컬럼 정의
+                # 1. 데이터 가공 (NaN 채우기 & 지문 자르기)
+                # 원본 df를 건드리지 않기 위해 복사본 생성
+                display_df = df.copy().fillna('') 
+                
+                # 지문이 있으면 40자로 자르고 ... 붙이기 (없으면 빈칸)
+                if 'passage' in display_df.columns:
+                    display_df['passage'] = display_df['passage'].apply(
+                        lambda x: (str(x)[:40] + '...') if len(str(x)) > 40 else str(x)
+                    )
+
+                # 2. 테이블 컬럼 정의 (format 함수 제거)
                 columns = [
                     {'name': 'id', 'label': '문제ID', 'field': 'id', 'sortable': True, 'align': 'left'},
                     {'name': 'answer', 'label': '정답', 'field': 'answer', 'sortable': True, 'align': 'center'},
-                    # 지문은 너무 기니까 앞부분만 보여주기
-                    {'name': 'passage', 'label': '지문(미리보기)', 'field': 'passage', 'align': 'left', 
-                     'format': lambda val: (val[:40] + '...') if isinstance(val, str) and len(val) > 40 else val}
+                    {'name': 'passage', 'label': '지문(미리보기)', 'field': 'passage', 'align': 'left'}
                 ]
                 
-                # 테이블 생성 (검색 기능 포함)
+                # 3. 테이블 생성
                 with ui.card().classes('w-full'):
-                    ui.table(columns=columns, rows=df.to_dict('records'), row_key='id').classes('w-full').props('dense flat')
+                    ui.table(columns=columns, rows=display_df.to_dict('records'), row_key='id').classes('w-full').props('dense flat')
 
             ui.separator().classes('my-6')
             ui.button("로그아웃", on_click=self.logout).props('color=grey').classes('w-full')
