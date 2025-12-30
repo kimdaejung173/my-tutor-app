@@ -72,8 +72,8 @@ class HomeworkApp:
     def start_login(self):
         self.main_container.clear()
         with self.main_container:
-            # [수정됨] Streamlit 문법 제거하고 NiceGUI 방식으로 여백 추가
-            ui.html("<br><br>") 
+            # [수정 완료] ui.html 대신 ui.label로 안전하게 여백 주기 (에러 원인 제거)
+            ui.label().classes('h-16') 
             
             ui.markdown("# 🔒 1등급 영어 과외").classes('text-center w-full mb-6 text-gray-800')
             
@@ -94,7 +94,7 @@ class HomeworkApp:
         # 유저 DB 확인
         users_df = fetch_data('users')
         if users_df.empty:
-            # 비상용 테스트 계정 (DB 연결 안될 때 사용)
+            # 비상용 테스트 계정
             users_df = pd.DataFrame([{'id': 'student', 'password': '123', 'name': '테스트학생'}])
         
         user_row = users_df[(users_df['id'] == input_id) & (users_df['password'] == input_pw)]
@@ -105,7 +105,7 @@ class HomeworkApp:
             
             ui.notify(f"환영합니다, {self.user_name} 학생!", type='positive')
             
-            # [수정됨] 실제 DB 테이블 이름 'exam_questions' 사용
+            # 실제 DB 테이블 이름 'exam_questions' 사용
             global questions_df
             questions_df = fetch_data('exam_questions')
             
@@ -256,7 +256,7 @@ class HomeworkApp:
                             
                             if self.submission_stage >= 1 and is_requested:
                                 t_text = translations[i] if i < len(translations) else "(해석 없음)"
-                                ui.html(f"<div class='text-sm text-green-700 bg-green-50 p-2 rounded mt-1'>🇰🇷 {t_text}</div>")
+                                ui.html(f"<div class='text-sm text-green-700 bg-green-50 p-2 rounded mt-1'>🇰🇷 {t_text}</div>", sanitize=False)
 
             ui.separator().classes('my-4')
 
