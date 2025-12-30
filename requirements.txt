@@ -1,4 +1,4 @@
 nicegui
 pandas
-gspread
-oauth2client
+supabase
+pytz
