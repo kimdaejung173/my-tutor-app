@@ -9,6 +9,7 @@ import pytz
 from supabase import create_client, Client
 
 # ===================== [1] Supabase 설정 =====================
+# URL과 KEY는 본인의 것으로 유지하세요
 SUPABASE_URL = "https://akckfshjloggszaqgbqc.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFrY2tmc2hqbG9nZ3N6YXFnYnFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcwNjI4NDcsImV4cCI6MjA4MjYzODg0N30.G4NAE_4DLlcrqjF00ZbIRsJELGlyI677p0ou8viwfwc"
 
@@ -71,16 +72,15 @@ class HomeworkApp:
     def start_login(self):
         self.main_container.clear()
         with self.main_container:
-            # 상단 여백
-            ui.markdown("<br><br>", unsafe_allow_html=True)
+            # [수정됨] Streamlit 문법 제거하고 NiceGUI 방식으로 여백 추가
+            ui.html("<br><br>") 
             
             ui.markdown("# 🔒 1등급 영어 과외").classes('text-center w-full mb-6 text-gray-800')
             
-            # [수정됨] ui.card() 제거 -> 테두리/그림자 없는 투명한 컨테이너 사용
+            # 테두리 없는 깔끔한 컨테이너
             with ui.column().classes('w-full max-w-sm mx-auto p-4 flex flex-col gap-4'):
                 ui.label("학생 로그인").classes('text-xl font-bold mb-2 self-center text-indigo-600')
                 
-                # 입력창 디자인은 유지 (outlined)
                 self.id_input = ui.input("아이디").classes('w-full bg-white').props('outlined dense')
                 self.pw_input = ui.input("비밀번호", password=True).classes('w-full bg-white').props('outlined dense')
                 self.pw_input.on('keydown.enter', self.process_login)
@@ -94,7 +94,7 @@ class HomeworkApp:
         # 유저 DB 확인
         users_df = fetch_data('users')
         if users_df.empty:
-            # 비상용: DB가 비었어도 테스트할 수 있게 (필요없으면 삭제 가능)
+            # 비상용 테스트 계정 (DB 연결 안될 때 사용)
             users_df = pd.DataFrame([{'id': 'student', 'password': '123', 'name': '테스트학생'}])
         
         user_row = users_df[(users_df['id'] == input_id) & (users_df['password'] == input_pw)]
@@ -105,7 +105,7 @@ class HomeworkApp:
             
             ui.notify(f"환영합니다, {self.user_name} 학생!", type='positive')
             
-            # [수정됨] 테이블 이름 'exam_questions'로 변경 (중요!)
+            # [수정됨] 실제 DB 테이블 이름 'exam_questions' 사용
             global questions_df
             questions_df = fetch_data('exam_questions')
             
@@ -116,22 +116,20 @@ class HomeworkApp:
 
     def update_sidebar(self):
         if self.sidebar_label:
-            # 로그인 상태면 이름 표시, 아니면 기본 문구
             text = f"👤 {self.user_name}" if self.user_id else "👤 로그인 필요"
             self.sidebar_label.set_text(text)
 
     def logout(self):
-        # [수정됨] 로그아웃 시 정보를 깨끗이 비움
         self.user_id = ""
         self.user_name = "" 
-        self.update_sidebar() # 사이드바 라벨 즉시 초기화
+        self.update_sidebar()
         self.start_login()
 
-    # --- [화면 2] 모드 선택 (Mock vs Practice) ---
+    # --- [화면 2] 모드 선택 ---
     def render_menu_selection(self):
         self.main_container.clear()
         
-        # 메뉴 들어올 때마다 최신 데이터 로드 ('exam_questions' 확인)
+        # 메뉴 진입 시 데이터 갱신
         global questions_df
         questions_df = fetch_data('exam_questions')
 
@@ -141,16 +139,14 @@ class HomeworkApp:
             
             with ui.row().classes('w-full gap-6 justify-center wrap'):
                 
-                # [수정됨] 1. 유형별 연습 (전체 클릭 가능)
-                # ui.card() 자체에 .on('click', ...) 이벤트를 걸고 cursor-pointer 추가
+                # 1. 유형별 연습 (카드 전체 클릭)
                 with ui.card().on('click', self.select_practice_type).classes('w-72 cursor-pointer hover:shadow-xl hover:-translate-y-1 transition p-6 flex flex-col items-center border-t-4 border-indigo-500 gap-3'):
                     ui.icon('category', size='3.5em', color='indigo')
                     ui.label('유형별 격파').classes('font-bold text-xl')
                     ui.label('빈칸, 순서, 삽입 등\n취약 유형 집중 공략').classes('text-center text-sm text-gray-400 whitespace-pre-line')
-                    # 시작하기 버튼은 시각적 요소로만 남김 (클릭 이벤트는 카드 전체가 받음)
                     ui.button("시작하기").props('flat color=indigo').classes('w-full mt-2 pointer-events-none')
 
-                # [수정됨] 2. 실전 모의고사 (전체 클릭 가능)
+                # 2. 실전 모의고사 (카드 전체 클릭)
                 with ui.card().on('click', self.start_mock_exam).classes('w-72 cursor-pointer hover:shadow-xl hover:-translate-y-1 transition p-6 flex flex-col items-center border-t-4 border-red-500 gap-3'):
                     ui.icon('timer', size='3.5em', color='red')
                     ui.label('실전 모의고사').classes('font-bold text-xl')
@@ -164,8 +160,7 @@ class HomeworkApp:
         """유형별 모드: 유형 선택 화면"""
         self.mode = 'practice'
         
-        # 데이터 프레임 컬럼 확인 (DB 테이블 변경으로 컬럼명이 다를 수 있음)
-        # 'type' 컬럼인지 'q_type' 인지 확인 필요 -> Supabase 사진상으로는 'type'임
+        # 컬럼명 확인 ('type' 또는 'q_type')
         type_col = 'type' if 'type' in questions_df.columns else 'q_type'
 
         if questions_df.empty:
@@ -193,8 +188,6 @@ class HomeworkApp:
         if questions_df.empty: return
 
         solved_ids = fetch_solved_ids(self.user_id, self.mode)
-        
-        # 컬럼명 대응 (Supabase 사진 기준 'type')
         type_col = 'type' if 'type' in questions_df.columns else 'q_type'
         
         cond = ~questions_df['id'].isin(solved_ids)
@@ -271,7 +264,7 @@ class HomeworkApp:
                 raw_opts = q.get('options')
                 if isinstance(raw_opts, str):
                     opts = json.loads(raw_opts.replace("'", '"')) if '[' in raw_opts else raw_opts.split('^')
-                else: opts = raw_opts # jsonb로 바로 들어오는 경우 리스트일 수 있음
+                else: opts = raw_opts 
             except: opts = ["보기 로드 실패"]
 
             if not isinstance(opts, list): opts = ["보기 데이터 형식 오류"]
@@ -286,7 +279,6 @@ class HomeworkApp:
                     ui.button("최종 정답 제출", on_click=self.submit_final)\
                         .props('color=red size=lg icon=done_all').classes('w-full font-bold')
                 else:
-                    # 다음 문제 로드 시 q_type 인자 전달
                     type_col = 'type' if 'type' in questions_df.columns else 'q_type'
                     next_type = q[type_col] if self.mode == 'practice' else None
                     ui.button("➡️ 다음 문제", on_click=lambda: self.load_question(next_type))\
