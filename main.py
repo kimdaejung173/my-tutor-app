@@ -83,19 +83,20 @@ class HomeworkApp:
                 ui.button("로그인", on_click=self.process_login).props('color=indigo unelevated').classes('w-full mt-2 font-bold')
 
     def process_login(self):
+        # ★ 수정됨: global 선언을 함수 맨 위로 이동 (SyntaxError 해결) ★
+        global questions_df 
+        
         input_id = self.id_input.value
         input_pw = self.pw_input.value
         
         # 1. 어드민 체크
         if input_id == 'admin':
-            # 비밀번호 체크가 필요하다면 여기서 추가 (일단은 프리패스)
             self.user_id = 'admin'
             self.user_name = '관리자'
             self.is_admin = True
             ui.notify("관리자 모드로 진입합니다.", type='positive')
             
             # 데이터 로드
-            global questions_df
             questions_df = fetch_data('problem_set')
             
             self.update_sidebar()
@@ -116,7 +117,6 @@ class HomeworkApp:
             self.is_admin = False
             ui.notify(f"환영합니다, {self.user_name}님!", type='positive')
             
-            global questions_df
             questions_df = fetch_data('problem_set')
             
             self.update_sidebar()
