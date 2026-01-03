@@ -6,6 +6,7 @@ import time
 import os
 import json
 import pytz 
+import traceback # 에러 추적용
 from supabase import create_client, Client
 
 # ===================== [1] Supabase 설정 =====================
@@ -18,21 +19,37 @@ except Exception as e:
     print(f"Supabase 연결 실패: {e}")
     supabase = None
 
-# --- 데이터 로드 함수 ---
+# --- 데이터 로드 함수 (실패 시 알림 기능 추가) ---
 def fetch_data(table_name):
-    if not supabase: return pd.DataFrame()
+    if not supabase: 
+        ui.notify("데이터베이스 연결 실패!", type='negative')
+        return pd.DataFrame()
     try:
         response = supabase.table(table_name).select('*').execute()
         if response.data:
             df = pd.DataFrame(response.data)
+            # ID 컬럼 문자열 변환
             if 'id' in df.columns: df['id'] = df['id'].astype(str)
             return df
         return pd.DataFrame()
     except Exception as e:
         print(f"{table_name} 로드 오류: {e}")
+        # 화면에 에러 띄우기 (디버깅용)
+        ui.notify(f"데이터 로드 실패 ({table_name}): {e}", type='negative', timeout=5000)
         return pd.DataFrame()
 
-# 전역 캐싱
+def fetch_solved_ids(user_id, mode):
+    if not supabase: return set()
+    try:
+        response = supabase.table('study_logs').select('problem_id').eq('user_id', user_id).eq('mode', mode).execute()
+        if response.data:
+            return set(str(item['problem_id']) for item in response.data)
+        return set()
+    except Exception as e:
+        print(f"기록 로드 오류: {e}")
+        return set()
+
+# 전역 변수
 questions_df = pd.DataFrame()
 
 # ===================== [2] 앱 로직 =====================
@@ -42,7 +59,6 @@ class HomeworkApp:
         self.user_name = ""
         self.is_admin = False
         
-        # 학생용 상태
         self.mode = "practice"
         self.current_q = None
         self.start_time = 0    
@@ -53,39 +69,30 @@ class HomeworkApp:
         self.first_answer = ""           
         self.final_answer = ""
         
-        # 어드민용 상태
         self.admin_selected_student = None
         self.admin_selected_date = None
         self.admin_logs = []
         self.admin_current_idx = 0
 
-        # UI 참조
         self.main_container = None
         self.sidebar_label = None
         self.radio_comp = None
 
     # ---------------------------------------------------------
-    # [화면 1] 로그인 (심플 버전)
+    # [화면 1] 로그인
     # ---------------------------------------------------------
     def start_login(self):
         self.main_container.clear()
         with self.main_container:
-            # 상단 여백 (ui.html 에러 방지용 label 사용)
             ui.label().classes('h-24') 
-            
-            # 테두리/그림자 없는 심플 컨테이너
             with ui.column().classes('w-full max-w-xs mx-auto gap-4'):
-                # 로고나 제목 없이 입력창만 깔끔하게
                 self.id_input = ui.input("ID").classes('w-full bg-white').props('outlined dense')
                 self.pw_input = ui.input("PW", password=True).classes('w-full bg-white').props('outlined dense')
                 self.pw_input.on('keydown.enter', self.process_login)
-                
                 ui.button("로그인", on_click=self.process_login).props('color=indigo unelevated').classes('w-full mt-2 font-bold')
 
     def process_login(self):
-        # ★ 수정됨: global 선언을 함수 맨 위로 이동 (SyntaxError 해결) ★
         global questions_df 
-        
         input_id = self.id_input.value
         input_pw = self.pw_input.value
         
@@ -96,16 +103,19 @@ class HomeworkApp:
             self.is_admin = True
             ui.notify("관리자 모드로 진입합니다.", type='positive')
             
-            # 데이터 로드
+            # 데이터 로드 시도 및 결과 알림
             questions_df = fetch_data('problem_set')
-            
+            if questions_df.empty:
+                ui.notify("문제 데이터가 0개입니다! DB를 확인하세요.", type='warning', timeout=0, close_button=True)
+            else:
+                ui.notify(f"{len(questions_df)}개의 문제를 로드했습니다.", type='positive')
+
             self.update_sidebar()
             self.render_admin_dashboard()
             return
 
         # 2. 일반 학생 체크
         users_df = fetch_data('users')
-        # DB가 비었을 경우 테스트용
         if users_df.empty:
             users_df = pd.DataFrame([{'id': 'student', 'password': '123', 'name': '테스트학생'}])
         
@@ -117,7 +127,10 @@ class HomeworkApp:
             self.is_admin = False
             ui.notify(f"환영합니다, {self.user_name}님!", type='positive')
             
+            # 데이터 로드 시도 및 결과 알림
             questions_df = fetch_data('problem_set')
+            if questions_df.empty:
+                ui.notify("문제 데이터가 0개입니다! DB 권한을 확인하세요.", type='warning', timeout=0, close_button=True)
             
             self.update_sidebar()
             self.render_menu_selection()
@@ -138,25 +151,22 @@ class HomeworkApp:
         self.start_login()
 
     # ---------------------------------------------------------
-    # [화면 2-A] 학생 메뉴 (유형 / 모의고사)
+    # [화면 2-A] 학생 메뉴
     # ---------------------------------------------------------
     def render_menu_selection(self):
         self.main_container.clear()
+        # 메뉴 진입 시 데이터 재확인 (안전장치)
         global questions_df
-        questions_df = fetch_data('problem_set')
+        if questions_df.empty:
+            questions_df = fetch_data('problem_set')
 
         with self.main_container:
-            # 제목 및 설명 제거, 심플하게 카드만 배치
             ui.label().classes('h-10')
-            
             with ui.row().classes('w-full gap-6 justify-center wrap'):
-                
-                # 1. 유형 카드 (제목 간소화, 버튼 제거)
                 with ui.card().on('click', self.select_practice_type).classes('w-64 cursor-pointer hover:shadow-lg hover:-translate-y-1 transition p-8 flex flex-col items-center border-t-4 border-indigo-500 gap-4'):
                     ui.icon('category', size='4em', color='indigo')
                     ui.label('유형').classes('font-bold text-2xl text-gray-700')
 
-                # 2. 모의고사 카드
                 with ui.card().on('click', self.start_mock_exam).classes('w-64 cursor-pointer hover:shadow-lg hover:-translate-y-1 transition p-8 flex flex-col items-center border-t-4 border-red-500 gap-4'):
                     ui.icon('timer', size='4em', color='red')
                     ui.label('모의고사').classes('font-bold text-2xl text-gray-700')
@@ -169,49 +179,35 @@ class HomeworkApp:
     # ---------------------------------------------------------
     def render_admin_dashboard(self):
         self.main_container.clear()
-        
-        # 로그 데이터 가져오기
         logs_df = fetch_data('study_logs')
-        
         if logs_df.empty:
             with self.main_container:
                 ui.label("아직 학습 기록이 없습니다.").classes('text-lg text-gray-500')
                 ui.button("새로고침", on_click=self.render_admin_dashboard)
             return
 
-        # 필터링용 데이터 준비
         students = sorted(logs_df['user_id'].unique().tolist())
-        
         with self.main_container:
             ui.label("관리자 대시보드").classes('text-xl font-bold mb-4 text-indigo-700')
-            
             with ui.row().classes('gap-4 items-end mb-6'):
-                # 학생 선택
                 stu_select = ui.select(students, label='학생 선택').classes('w-40')
-                
-                # 날짜 선택 (학생 선택 시 갱신)
                 date_select = ui.select([], label='날짜 선택').classes('w-40')
                 
                 def update_dates(e):
                     selected_stu = e.value
                     if selected_stu:
                         stu_logs = logs_df[logs_df['user_id'] == selected_stu]
-                        # 타임스탬프에서 날짜(YYYY-MM-DD)만 추출
                         dates = sorted(list(set(t.split(' ')[0] for t in stu_logs['timestamp'])), reverse=True)
                         date_select.options = dates
                         date_select.value = dates[0] if dates else None
-                
                 stu_select.on_value_change(update_dates)
                 
-                # 조회 버튼
                 def load_admin_view():
                     stu = stu_select.value
                     date = date_select.value
                     if not stu or not date:
                         ui.notify("학생과 날짜를 선택해주세요.", type='warning')
                         return
-                    
-                    # 해당 조건의 로그 필터링
                     filtered = logs_df[
                         (logs_df['user_id'] == stu) & 
                         (logs_df['timestamp'].str.startswith(date))
@@ -229,16 +225,11 @@ class HomeworkApp:
 
                 ui.button("조회", on_click=load_admin_view).props('unelevated color=indigo')
 
-    # ---------------------------------------------------------
-    # [화면 3-B] 어드민 리뷰 뷰어 (학생 화면 복원 + 정답표시)
-    # ---------------------------------------------------------
     def render_admin_review_page(self):
         self.main_container.clear()
-        
         log = self.admin_logs[self.admin_current_idx]
         q_id = log['problem_id']
         
-        # 문제 데이터 찾기
         q_row = questions_df[questions_df['id'] == q_id]
         if q_row.empty:
             with self.main_container:
@@ -247,12 +238,9 @@ class HomeworkApp:
             return
         
         q = q_row.iloc[0]
-        
-        # 로그 데이터 파싱
         try:
             viewed_sents = set(map(int, str(log.get('viewed_sentences','')).split(', '))) if log.get('viewed_sentences') else set()
             unknown_w = set(str(log.get('unknown_words','')).split(', ')) if log.get('unknown_words') else set()
-            # first_ans = str(log.get('first_answer', '-'))
             final_ans = str(log.get('final_answer', '-'))
             is_correct = (log.get('is_correct') == 'O')
         except:
@@ -260,37 +248,24 @@ class HomeworkApp:
             final_ans, is_correct = '-', False
 
         with self.main_container:
-            # 상단 정보 바
             with ui.card().classes('w-full bg-gray-100 p-2 mb-4 flex-row justify-between items-center'):
                 ui.label(f"학생: {self.admin_selected_student} | 날짜: {self.admin_selected_date}").classes('font-bold')
-                
                 status_color = 'green' if is_correct else 'red'
                 status_text = "정답 ⭕" if is_correct else f"오답 ❌ (학생선택: {final_ans})"
                 ui.badge(status_text).props(f'color={status_color}').classes('text-lg')
 
-            # 문제 렌더링 (읽기 전용)
-            # 1. 보기 (Options) - 학생이 모른다고 체크한 단어 하이라이트 필요
             self.render_read_only_options(q, unknown_w)
-            
             ui.separator().classes('my-4')
-            
-            # 2. 지문 (Passage) - 학생이 본 힌트(해석) 표시
             self.render_read_only_passage(q, viewed_sents, unknown_w)
-            
-            # 하단 네비게이션
             self.render_admin_nav()
 
     def render_admin_nav(self):
         with ui.row().classes('w-full justify-between mt-6'):
-            # 이전 버튼
             if self.admin_current_idx > 0:
                 ui.button("◀ 이전 문제", on_click=lambda: self.move_admin_idx(-1)).props('outline color=grey')
             else:
-                ui.label() # 공간 채우기용
-                
+                ui.label()
             ui.label(f"{self.admin_current_idx + 1} / {len(self.admin_logs)}").classes('font-bold self-center')
-            
-            # 다음 버튼
             if self.admin_current_idx < len(self.admin_logs) - 1:
                 ui.button("다음 문제 ▶", on_click=lambda: self.move_admin_idx(1)).props('unelevated color=indigo')
             else:
@@ -301,18 +276,14 @@ class HomeworkApp:
         self.render_admin_review_page()
 
     def render_read_only_options(self, q, unknown_w):
-        # 학생 모드와 비슷하지만 클릭 불가, 단어 하이라이트만 적용
         opts = self.get_options_list(q)
         trans = self.get_options_trans_list(q)
-        
         ui.label("보기 (Options)").classes('font-bold text-gray-500 mb-2')
         with ui.column().classes('w-full gap-2 border p-4 rounded bg-white'):
             for i, opt_text in enumerate(opts):
                 with ui.row().classes('items-center w-full'):
                     ui.label(f"{i+1}.").classes('font-bold mr-2 text-gray-500')
-                    # 단어 렌더링
                     self.render_static_text(opt_text, unknown_w)
-                    # 해석 (항상 표시하거나, 아이콘으로 표시)
                     if trans and i < len(trans):
                         ui.icon('translate', color='grey').tooltip(trans[i])
 
@@ -321,99 +292,101 @@ class HomeworkApp:
         sentences = re.split(r'(?<=[.?!])\s+', passage)
         trans_text = str(q.get('translation', ''))
         translations = re.split(r'(?<=[.?!])\s+', trans_text) if trans_text else []
-
         with ui.column().classes('w-full gap-4'):
             for i, sent in enumerate(sentences):
                 if not sent.strip(): continue
                 with ui.row().classes('w-full items-start no-wrap'):
-                    # 힌트 봤는지 여부 표시
                     color = 'green' if i in viewed_sents else 'grey'
                     ui.badge(f"{i+1}").props(f'color={color}').classes('mt-1 mr-2')
-                    
                     with ui.column().classes('flex-1'):
                         self.render_static_text(sent, unknown_w)
-                        # 학생이 힌트를 봤다면 해석도 같이 출력
                         if i in viewed_sents and i < len(translations):
                             ui.label(f"🇰🇷 {translations[i]}").classes('text-sm text-green-700 bg-green-50 p-1 rounded mt-1')
 
     def render_static_text(self, text, unknown_w):
-        # 클릭 이벤트 없이 하이라이팅만 적용
         words = str(text).split()
         with ui.row().classes('gap-1 wrap items-baseline w-full'):
             for word in words:
-                # DB에 저장된 unknown_words는 순수 단어이거나 태그가 제거된 상태여야 함
-                # 여기서는 간단히 포함 여부만 확인
                 clean_word = re.sub(r'[^\w]', '', word)
                 lbl = ui.label(word).classes('text-lg leading-relaxed rounded px-1')
-                
-                # 학생이 몰랐던 단어라면 노란색 배경
                 if clean_word in unknown_w or word in unknown_w:
                     lbl.classes('bg-yellow-200')
 
     # ---------------------------------------------------------
-    # [화면 2,3] 학생용 로직 (기존 유지 + 구조 변경)
+    # [화면 2,3] 학생용 로직 (디버깅 강화)
     # ---------------------------------------------------------
     def select_practice_type(self):
-        self.mode = 'practice'
-        # 유형 선택 로직 (이전과 동일)
-        type_col = 'type' if 'type' in questions_df.columns else 'q_type'
-        if questions_df.empty:
-            ui.notify("문제 없음", type='warning')
-            return
-        available_types = questions_df[type_col].unique().tolist()
-        
-        self.main_container.clear()
-        with self.main_container:
-            ui.button('⬅', on_click=self.render_menu_selection).props('flat icon=arrow_back dense text-color=grey')
-            ui.label("유형 선택").classes('text-xl font-bold mb-4')
-            with ui.grid(columns=2).classes('w-full gap-3'):
-                for q_type in available_types:
-                    count = len(questions_df[questions_df[type_col] == q_type])
-                    ui.button(f"{q_type} ({count})", on_click=lambda t=q_type: self.load_question(t)).props('outline color=indigo').classes('h-14 text-lg')
+        try:
+            self.mode = 'practice'
+            if questions_df.empty:
+                ui.notify("등록된 문제가 없습니다. DB 연결을 확인해주세요.", type='negative', close_button=True)
+                return
+                
+            type_col = 'type' if 'type' in questions_df.columns else 'q_type'
+            available_types = questions_df[type_col].unique().tolist()
+            
+            self.main_container.clear()
+            with self.main_container:
+                ui.button('⬅', on_click=self.render_menu_selection).props('flat icon=arrow_back dense text-color=grey')
+                ui.label("유형 선택").classes('text-xl font-bold mb-4')
+                with ui.grid(columns=2).classes('w-full gap-3'):
+                    for q_type in available_types:
+                        count = len(questions_df[questions_df[type_col] == q_type])
+                        ui.button(f"{q_type} ({count})", on_click=lambda t=q_type: self.load_question(t)).props('outline color=indigo').classes('h-14 text-lg')
+        except Exception as e:
+            ui.notify(f"유형 선택 오류: {e}", type='negative', close_button=True)
+            print(traceback.format_exc())
 
     def start_mock_exam(self):
         self.mode = 'mock'
         self.load_question(None)
 
     def load_question(self, target_type=None):
-        # (이전과 동일한 문제 로드 로직)
-        if questions_df.empty: return
-        solved_ids = fetch_solved_ids(self.user_id, self.mode)
-        type_col = 'type' if 'type' in questions_df.columns else 'q_type'
-        cond = ~questions_df['id'].isin(solved_ids)
-        if target_type:
-            cond = cond & (questions_df[type_col] == target_type)
-        remaining = questions_df[cond]
-        
-        if remaining.empty:
-            ui.notify("문제를 모두 풀었습니다!", type='positive')
-            self.render_menu_selection()
-            return
+        try:
+            global questions_df
+            if questions_df.empty:
+                ui.notify("문제 데이터가 로드되지 않았습니다.", type='negative', close_button=True)
+                return
 
-        self.current_q = remaining.sample(1).iloc[0]
-        self.submission_stage = 0
-        self.requested_hints = set()
-        self.viewed_options_idx = set()
-        self.unknown_words = set()
-        self.first_answer = ""
-        self.final_answer = ""
-        self.start_time = time.time()
-        self.render_question_page()
+            solved_ids = fetch_solved_ids(self.user_id, self.mode)
+            type_col = 'type' if 'type' in questions_df.columns else 'q_type'
+            
+            cond = ~questions_df['id'].isin(solved_ids)
+            if target_type:
+                cond = cond & (questions_df[type_col] == target_type)
+            
+            remaining = questions_df[cond]
+            
+            if remaining.empty:
+                ui.notify("해당 조건의 문제를 모두 풀었습니다! 🎉", type='positive')
+                self.render_menu_selection()
+                return
+
+            self.current_q = remaining.sample(1).iloc[0]
+            self.submission_stage = 0
+            self.requested_hints = set()
+            self.viewed_options_idx = set()
+            self.unknown_words = set()
+            self.first_answer = ""
+            self.final_answer = ""
+            self.start_time = time.time()
+            self.render_question_page()
+            
+        except Exception as e:
+            ui.notify(f"문제 로드 중 오류 발생: {str(e)}", type='negative', timeout=0, close_button=True)
+            print(traceback.format_exc())
 
     def render_question_page(self):
         self.main_container.clear()
         q = self.current_q
         with self.main_container:
-            # 상단바
             with ui.row().classes('w-full justify-between items-center mb-2'):
                 ui.button(icon='close', on_click=self.render_menu_selection).props('flat dense color=grey')
                 ui.badge(self.mode.upper()).props('outline color=indigo')
 
-            # 1. 보기 영역 (Options First)
             self.render_options_area(q)
             ui.separator().classes('my-6')
 
-            # 2. 지문 영역
             extra = q.get('extra_content')
             if extra and str(extra).lower() not in ['nan', 'none', '']:
                 with ui.card().classes('w-full bg-gray-50 border p-4 mb-4'):
@@ -435,9 +408,9 @@ class HomeworkApp:
                         with ui.column().classes('flex-1'):
                             self.render_interactive_text(sent, f"sent_{i}")
                             if self.submission_stage >= 1 and i in self.requested_hints and i < len(translations):
+                                # 500 에러 원인이었던 unsafe_allow_html 제거됨 (sanitize=False도 기본값이라 생략 가능)
                                 ui.html(f"<div class='text-sm text-green-700 bg-green-50 p-2 rounded mt-1'>🇰🇷 {translations[i]}</div>")
 
-            # 3. 정답 선택 및 제출
             ui.separator().classes('my-4')
             opts = self.get_options_list(q)
             radio_options = [f"{i+1}. {opt}" for i, opt in enumerate(opts)]
@@ -450,7 +423,6 @@ class HomeworkApp:
                 elif self.submission_stage == 1:
                     ui.button("최종 제출", on_click=self.submit_final).props('color=red size=lg icon=done_all').classes('w-full font-bold')
                 else:
-                    # 다음 문제
                     type_col = 'type' if 'type' in questions_df.columns else 'q_type'
                     next_type = q[type_col] if self.mode == 'practice' else None
                     ui.button("다음 문제 ➡️", on_click=lambda: self.load_question(next_type)).props('color=green size=lg').classes('w-full font-bold')
@@ -497,12 +469,10 @@ class HomeworkApp:
         words = str(text).split()
         with ui.row().classes('gap-1 wrap items-baseline w-full'):
             for idx, word in enumerate(words):
-                clean_word = re.sub(r'[^\w]', '', word) # 특수문자 제거
+                clean_word = re.sub(r'[^\w]', '', word)
                 unique_id = f"{prefix}_{idx}_{clean_word}"
-                
                 lbl = ui.label(word).classes('cursor-pointer rounded px-1 transition-colors hover:bg-blue-100 hover:text-blue-600 text-lg')
                 if unique_id in self.unknown_words: lbl.classes('bg-yellow-200')
-                
                 lbl.on('click', lambda _, l=lbl, w=unique_id: self.toggle_word(l, w))
 
     def toggle_word(self, label, word_id):
@@ -533,7 +503,6 @@ class HomeworkApp:
             self.first_answer = str(num)
             self.submit_final()
             return
-        
         self.first_answer = str(num)
         self.submission_stage = 1
         ui.notify("해석이 공개되었습니다.", type='info')
@@ -545,25 +514,20 @@ class HomeworkApp:
             ui.notify("선택해주세요!", type='warning')
             return
         self.final_answer = str(num)
-        
         correct = str(self.current_q['answer']).strip()
         is_correct = (self.final_answer == correct)
         duration = int(time.time() - self.start_time)
-        
         self.submission_stage = 2
         self.save_log(is_correct, duration)
         self.render_question_page()
 
     def save_log(self, is_correct, duration):
         if not supabase: return
-        
-        # 태그 제거하고 순수 단어만 저장
         clean_words = set()
         for w in self.unknown_words:
             parts = w.split('_')
             if len(parts) > 1: clean_words.add(parts[-1])
             else: clean_words.add(w)
-            
         data = {
             "timestamp": datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d %H:%M:%S"),
             "user_id": self.user_id,
@@ -581,6 +545,7 @@ class HomeworkApp:
             supabase.table('study_logs').insert(data).execute()
         except Exception as e:
             print(f"Log Error: {e}")
+            ui.notify(f"로그 저장 실패: {str(e)}", type='negative')
 
     def render_result(self):
         with self.result_container:
@@ -591,7 +556,6 @@ class HomeworkApp:
                 ui.run_javascript('confetti()')
             else:
                 ui.markdown(f"### 오답입니다. 정답: **{ans}번**").classes('text-red-600')
-            
             with ui.expansion('해설 보기', icon='help').classes('w-full bg-blue-50'):
                 ui.markdown(self.current_q.get('explanation', '해설 없음')).classes('p-4')
 
